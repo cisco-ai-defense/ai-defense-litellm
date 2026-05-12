@@ -1,0 +1,7 @@
+include LICENSE
+include README.md
+include pyproject.toml
+recursive-include cisco_ai_defense_litellm py.typed
+recursive-exclude tests *
+global-exclude __pycache__
+global-exclude *.py[co]

@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cisco-ai-defense-litellm"
+version = "0.2.0"
+description = "Cisco AI Defense integration for LiteLLM proxy and Python SDK request and response validation"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.10,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Cisco AI Defense", email = "ai-defense-eng@cisco.com" },
+]
+maintainers = [
+  { name = "Cisco AI Defense", email = "ai-defense-eng@cisco.com" },
+]
+keywords = [
+  "cisco",
+  "ai-defense",
+  "litellm",
+  "llm-security",
+  "prompt-injection",
+  "mcp",
+  "guardrails",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Information Technology",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Security",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/cisco-ai-defense/ai-defense-litellm"
+Repository = "https://github.com/cisco-ai-defense/ai-defense-litellm"
+Documentation = "https://github.com/cisco-ai-defense/ai-defense-litellm#readme"
+Issues = "https://github.com/cisco-ai-defense/ai-defense-litellm/issues"
+Changelog = "https://github.com/cisco-ai-defense/ai-defense-litellm/releases"
+
+[project.optional-dependencies]
+sdk = [
+  "litellm>=1.83,<2",
+]
+proxy = [
+  "litellm[proxy]>=1.83,<2",
+]
+
+[tool.setuptools.packages.find]
+include = ["cisco_ai_defense_litellm*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+cisco_ai_defense_litellm = ["py.typed"]
