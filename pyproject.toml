@@ -64,6 +64,16 @@ proxy = [
 # skip it instead of failing.
 aibom = ['cisco-aibom>=0.4.0; python_version >= "3.11" and python_version < "3.14"']
 
+# Poetry-only declaration that works alongside the PEP 621 metadata above.
+# Poetry installs the `dev` group automatically on `poetry install`, so the
+# org's CI workflow (`poetry install --extras aibom` followed by
+# `poetry run pytest`) gets pytest in the venv. setuptools, pip and twine
+# all ignore `[tool.poetry.*]`, so the wheel/sdist are unaffected.
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.0"
+pytest-asyncio = ">=0.21.0"
+pytest-cov = "^4.1.0"
+
 [tool.setuptools.packages.find]
 include = ["cisco_ai_defense_litellm*"]
 exclude = ["tests*"]
