@@ -2,7 +2,6 @@
 # CI for the cisco-ai-defense-litellm pip package.
 #
 # Triggers, concurrency, junit/dorny reporter, and step-summary patterns are
-# modeled on cisco-aispg/ai-defense-csp-simulators (.github/workflows/ci.yml).
 # Action-pinning policy follows the simulator: upstream `actions/*` at the
 # major-version tag, `cisco-actions/*` mirrors pinned to commit SHA.
 name: CI - Build & Test (LiteLLM)

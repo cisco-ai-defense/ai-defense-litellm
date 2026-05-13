@@ -1,5 +1,9 @@
+import sys
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from cisco_ai_defense_litellm.sdk import install, is_installed, uninstall
 
