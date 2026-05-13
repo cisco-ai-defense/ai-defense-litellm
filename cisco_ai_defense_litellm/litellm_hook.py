@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional
@@ -74,7 +73,6 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         *,
         block_mode: Optional[str] = None,
         scan_outputs: Optional[bool] = None,
-        api_modes: Optional[tuple[str, ...]] = None,
     ):
         try:
             if CustomGuardrail is not None:
@@ -90,24 +88,12 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         self.client = client or build_ai_defense_client_from_env()
         self.block_mode = (block_mode or os.getenv("AI_DEFENSE_BLOCK_MODE", "message")).lower()
         self.scan_outputs = _env_bool("AI_DEFENSE_SCAN_OUTPUTS", default=True) if scan_outputs is None else scan_outputs
-        self.allowed_targets = (
-            api_modes
-            if api_modes is not None
-            else _env_csv_tuple("AI_DEFENSE_API_MODE", default=())
-        )
         LOGGER.info(
-            "AI Defense LiteLLM hook initialized: client=%s block_mode=%s scan_outputs=%s allowed_targets=%s",
+            "AI Defense LiteLLM hook initialized: client=%s block_mode=%s scan_outputs=%s",
             type(self.client).__name__,
             self.block_mode,
             self.scan_outputs,
-            ",".join(self.allowed_targets) or "none",
         )
-
-    def _proxy_skip_reason(self, data: Mapping[str, Any]) -> Optional[str]:
-        return _skip_reason_for_data(data, self.allowed_targets)
-
-    def _sdk_skip_reason(self, data: Mapping[str, Any]) -> Optional[str]:
-        return _skip_reason_for_sdk_data(data, self.allowed_targets)
 
     async def async_pre_call_hook(
         self,
@@ -124,16 +110,6 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
             data.get("model"),
             data.get("method"),
         )
-        skip_reason = self._proxy_skip_reason(data)
-        if skip_reason:
-            LOGGER.info(
-                "AI Defense request hook skipped: upstream gateway handles validation reason=%s call_type=%s model=%s method=%s",
-                skip_reason,
-                call_type,
-                data.get("model"),
-                data.get("method"),
-            )
-            return data
 
         mcp_decision = await _inspect_mcp_payload_if_supported(self.client, data, direction="input", metadata=request_metadata)
         if mcp_decision is not None:
@@ -269,16 +245,6 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         user_api_key_dict: Any,
         response: Any,
     ) -> Any:
-        skip_reason = self._proxy_skip_reason(data)
-        if skip_reason:
-            LOGGER.info(
-                "AI Defense response hook skipped: upstream gateway handles validation reason=%s model=%s method=%s",
-                skip_reason,
-                data.get("model"),
-                data.get("method"),
-            )
-            return response
-
         if not self.scan_outputs:
             LOGGER.info(
                 "AI Defense response hook skipped: scan_outputs=false model=%s method=%s",
@@ -402,15 +368,6 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         )
 
     async def async_pre_call_deployment_hook(self, kwargs: Dict[str, Any], call_type: str) -> Any:
-        skip_reason = self._sdk_skip_reason(kwargs)
-        if skip_reason:
-            LOGGER.info(
-                "AI Defense deployment request hook skipped: upstream gateway handles validation reason=%s call_type=%s model=%s",
-                skip_reason,
-                call_type,
-                kwargs.get("model"),
-            )
-            return kwargs
         LOGGER.info(
             "AI Defense deployment request hook reached: call_type=%s model=%s",
             call_type,
@@ -432,15 +389,6 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         response: Any,
         call_type: str,
     ) -> Any:
-        skip_reason = self._sdk_skip_reason(request_data)
-        if skip_reason:
-            LOGGER.info(
-                "AI Defense deployment response hook skipped: upstream gateway handles validation reason=%s call_type=%s model=%s",
-                skip_reason,
-                call_type,
-                request_data.get("model"),
-            )
-            return response
         LOGGER.info(
             "AI Defense deployment response hook reached: call_type=%s model=%s",
             call_type,
@@ -456,16 +404,6 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         end_time: Any,
     ) -> Optional[Any]:
         del start_time, end_time
-        skip_reason = _skip_reason_for_mcp_tool_kwargs(kwargs, self.allowed_targets)
-        if skip_reason:
-            LOGGER.info(
-                "AI Defense MCP tool response hook skipped: upstream gateway handles validation reason=%s tool=%s server_name=%s",
-                skip_reason,
-                kwargs.get("name"),
-                kwargs.get("server_name"),
-            )
-            return None
-
         if not self.scan_outputs:
             LOGGER.info(
                 "AI Defense MCP tool response hook skipped: scan_outputs=false tool=%s",
@@ -550,13 +488,6 @@ def _env_bool(name: str, *, default: bool) -> bool:
     return raw.lower() in {"1", "true", "yes", "on"}
 
 
-def _env_csv_tuple(name: str, *, default: tuple[str, ...]) -> tuple[str, ...]:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return tuple(item.strip() for item in raw.split(",") if item.strip())
-
-
 def _response_headers_for_data(data: Mapping[str, Any]) -> Dict[str, str]:
     ai_defense = data.get("metadata", {}).get("ai_defense", {})
     headers: Dict[str, str] = {}
@@ -594,226 +525,6 @@ def _sdk_blocked_error(message: str, *, model: Any) -> Exception:
         )
     except Exception:
         return RuntimeError(message)
-
-
-def _skip_reason_for_data(data: Mapping[str, Any], allowed_targets: tuple[str, ...]) -> Optional[str]:
-    gateway_reason = _gateway_reason_for_data(data)
-    if gateway_reason:
-        return gateway_reason
-
-    target_name = _inspection_target_name(data)
-    if target_name and target_name in allowed_targets:
-        return None
-
-    if target_name:
-        return f"target_not_allowed={target_name}"
-
-    return None
-
-
-def _skip_reason_for_mcp_tool_kwargs(
-    kwargs: Mapping[str, Any],
-    allowed_targets: tuple[str, ...],
-) -> Optional[str]:
-    gateway_reason = _gateway_reason_for_mcp_kwargs(kwargs)
-    if gateway_reason:
-        return gateway_reason
-
-    target_name = _inspection_target_name_for_mcp_kwargs(kwargs)
-    if target_name and target_name in allowed_targets:
-        return None
-
-    if target_name:
-        return f"target_not_allowed={target_name}"
-
-    return None
-
-
-def _skip_reason_for_sdk_data(data: Mapping[str, Any], allowed_targets: tuple[str, ...]) -> Optional[str]:
-    gateway_reason = _gateway_reason_for_sdk_data(data)
-    if gateway_reason:
-        return gateway_reason
-
-    target_name = _inspection_target_name_for_sdk_data(data)
-    if target_name and target_name in allowed_targets:
-        return None
-
-    if target_name:
-        return f"target_not_allowed={target_name}"
-
-    return None
-
-
-def _gateway_reason_for_sdk_data(data: Mapping[str, Any]) -> Optional[str]:
-    metadata = data.get("metadata")
-    if isinstance(metadata, Mapping):
-        model_group = _string_value(metadata.get("model_group"))
-        if _looks_like_gateway_target(model_group):
-            return f"model_group={model_group}"
-
-    model = _string_value(data.get("model"))
-    if _looks_like_gateway_target(model):
-        return f"model={model}"
-
-    return None
-
-
-_MCP_TOOL_CALL_PLACEHOLDER = "mcp-tool-call"
-
-# Upstream LiteLLM (litellm/proxy/utils.py:_convert_mcp_to_llm_format) builds
-# the dict it hands to async_pre_call_hook for MCP traffic. That dict carries
-# `model="mcp-tool-call"` (a generic placeholder) and intentionally does NOT
-# include `server_name`. The original HTTP request path is preserved in
-# `user_api_key_request_route`, which is the only place the actual MCP server
-# alias is recoverable across every MCP method (tools/call, tools/list,
-# prompts/list, resources/list, ...). The two routing shapes LiteLLM exposes
-# are `/<server>/mcp[/...]` and `/mcp/<server>[/...]`; both are handled below.
-_MCP_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"/(?P<server>[^/?#]+)/mcp(?:[/?#]|$)"),
-    re.compile(r"/mcp/(?P<server>[^/?#]+)(?:[/?#]|$)"),
-)
-
-
-def _mcp_server_name_from_request_route(route: Optional[str]) -> Optional[str]:
-    if not route:
-        return None
-    for pattern in _MCP_PATH_PATTERNS:
-        match = pattern.search(route)
-        if not match:
-            continue
-        candidate = match.group("server")
-        if candidate and candidate.lower() != "mcp":
-            return candidate
-    return None
-
-
-def _mcp_server_name_from_data(data: Mapping[str, Any]) -> Optional[str]:
-    for key in ("server_name", "mcp_server_name", "mcp_server"):
-        value = _string_value(data.get(key))
-        if value:
-            return value
-
-    route_server = _mcp_server_name_from_request_route(
-        _string_value(data.get("user_api_key_request_route"))
-    )
-    if route_server:
-        return route_server
-
-    tool_name = _string_value(data.get("mcp_tool_name"))
-    if tool_name and "-" in tool_name:
-        return tool_name.split("-", 1)[0]
-
-    model = _string_value(data.get("model"))
-    if (
-        model
-        and model != _MCP_TOOL_CALL_PLACEHOLDER
-        and (data.get("method") or data.get("mcp_tool_name"))
-    ):
-        return model
-
-    return None
-
-
-def _mcp_tool_name_from_data(data: Mapping[str, Any]) -> Optional[str]:
-    tool_name = _string_value(data.get("mcp_tool_name"))
-    if tool_name:
-        return tool_name
-
-    params = data.get("params")
-    if isinstance(params, Mapping):
-        return _string_value(params.get("name"))
-
-    return None
-
-
-def _inspection_target_name(data: Mapping[str, Any]) -> Optional[str]:
-    server_name = _mcp_server_name_from_data(data)
-    if server_name:
-        return server_name
-
-    model = _string_value(data.get("model"))
-    if model and model != _MCP_TOOL_CALL_PLACEHOLDER:
-        return model
-
-    return None
-
-
-def _inspection_target_name_for_sdk_data(data: Mapping[str, Any]) -> Optional[str]:
-    metadata = data.get("metadata")
-    if isinstance(metadata, Mapping):
-        model_group = _string_value(metadata.get("model_group"))
-        if model_group:
-            return model_group
-
-    server_name = _string_value(data.get("mcp_server_name") or data.get("server_name"))
-    if server_name:
-        return server_name
-
-    route_server = _mcp_server_name_from_request_route(
-        _string_value(data.get("user_api_key_request_route"))
-    )
-    if route_server:
-        return route_server
-
-    tool_name = _string_value(data.get("mcp_tool_name"))
-    if tool_name and "-" in tool_name:
-        return tool_name.split("-", 1)[0]
-
-    model = _string_value(data.get("model"))
-    if model == _MCP_TOOL_CALL_PLACEHOLDER:
-        return None
-    return model
-
-
-def _inspection_target_name_for_mcp_kwargs(kwargs: Mapping[str, Any]) -> Optional[str]:
-    server_name = _string_value(kwargs.get("server_name"))
-    if server_name:
-        return server_name
-
-    tool_name = _string_value(kwargs.get("name"))
-    if tool_name and "-" in tool_name:
-        return tool_name.split("-", 1)[0]
-
-    return tool_name
-
-
-def _gateway_reason_for_data(data: Mapping[str, Any]) -> Optional[str]:
-    model = _string_value(data.get("model"))
-    if _looks_like_gateway_target(model):
-        return f"model={model}"
-
-    server_name = _mcp_server_name_from_data(data)
-    if _looks_like_gateway_target(server_name):
-        return f"mcp_server={server_name}"
-
-    tool_name = _mcp_tool_name_from_data(data)
-    if _looks_like_gateway_target(tool_name):
-        return f"mcp_tool={tool_name}"
-
-    return None
-
-
-def _gateway_reason_for_mcp_kwargs(kwargs: Mapping[str, Any]) -> Optional[str]:
-    server_name = _string_value(kwargs.get("server_name"))
-    if _looks_like_gateway_target(server_name):
-        return f"mcp_server={server_name}"
-
-    tool_name = _string_value(kwargs.get("name"))
-    if _looks_like_gateway_target(tool_name):
-        return f"mcp_tool={tool_name}"
-
-    return None
-
-
-def _looks_like_gateway_target(value: Optional[str]) -> bool:
-    if not value:
-        return False
-    normalized = value.lower().replace("-", "_")
-    return "ai_defense_gateway" in normalized or normalized.startswith("gateway_")
-
-
-def _string_value(value: Any) -> Optional[str]:
-    return value if isinstance(value, str) else None
 
 
 def _record_decision(data: Dict[str, Any], direction: str, decision: AIDefenseDecision) -> None:
