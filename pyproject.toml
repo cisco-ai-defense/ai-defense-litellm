@@ -55,6 +55,11 @@ sdk = [
 proxy = [
   "litellm[proxy]>=1.83,<2",
 ]
+# Empty marker extra consumed by the org's AIBOM compliance workflow
+# (`poetry install --extras aibom`). The workflow installs any BOM
+# generation tooling itself in a later step; we only need to declare the
+# extra here so Poetry's `--extras aibom` invocation resolves cleanly.
+aibom = []
 
 [tool.setuptools.packages.find]
 include = ["cisco_ai_defense_litellm*"]
