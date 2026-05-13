@@ -12,6 +12,9 @@ Inspect, block, or mutate LLM and Model Context Protocol (MCP) traffic flowing t
 - [Installation](#installation)
 - [Quickstart](#quickstart)
   - [LiteLLM Proxy mode](#litellm-proxy-mode)
+    - [Pattern 1 — Custom image with pip-installed plugin](#pattern-1--custom-image-with-pip-installed-plugin)
+    - [Pattern 2 — Stock LiteLLM image with pip install on host + mount](#pattern-2--stock-litellm-image-with-pip-install-on-host--mount)
+    - [Picking between Pattern 1 and Pattern 2](#picking-between-pattern-1-and-pattern-2)
   - [LiteLLM Python SDK mode](#litellm-python-sdk-mode)
 - [Configuration](#configuration)
   - [Environment variables](#environment-variables)
@@ -80,28 +83,108 @@ Add a single `callbacks` entry to your `litellm.yaml`:
 
 ```yaml
 litellm_settings:
-  callbacks: cisco_ai_defense_litellm.proxy_handler_instance
+  callbacks: cisco_ai_defense.proxy_handler_instance
   set_verbose: true
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
 ```
 
-Then export the AI Defense endpoint, API key, and the comma-separated list of LiteLLM aliases you want inspected before starting the proxy:
+The LiteLLM proxy resolves `litellm_settings.callbacks` as a file path relative to the directory containing `litellm.yaml`, **not** as a Python package import (see `litellm/proxy/types_utils/utils.py:get_instance_fn` upstream). You therefore create a one-line shim file `cisco_ai_defense.py` next to your YAML — **this file is not in the wheel**, you create it yourself after `pip install`:
+
+```python
+# cisco_ai_defense.py — customer-created, full file contents
+from cisco_ai_defense_litellm import proxy_handler_instance
+```
+
+This lets you keep `cisco-ai-defense-litellm` installed as a regular pip package while still satisfying the proxy's file-based callback loader. Both patterns below show how to materialize the shim — `RUN echo …` inline in a Dockerfile (Pattern 1), or `cat > … <<'EOF'` once on the host (Pattern 2).
+
+#### Pattern 1 — Custom image with pip-installed plugin
+
+Standard production path. Pip install runs once at image build; the resulting image is immutable and signable. Best for Kubernetes / ECS / Cloud Run / Helm.
+
+```dockerfile
+FROM docker.litellm.ai/berriai/litellm:main-latest
+
+ARG CISCO_AI_DEFENSE_LITELLM_VERSION=0.2.0
+RUN pip install --no-cache-dir \
+        "cisco-ai-defense-litellm[proxy]==${CISCO_AI_DEFENSE_LITELLM_VERSION}"
+
+COPY litellm.yaml /app/config/litellm.yaml
+
+# Materialize the shim alongside litellm.yaml. Not shipped in the wheel
+# above — it has to live as a separate file because the LiteLLM proxy
+# resolves litellm_settings.callbacks as a file path, not via importlib.
+RUN echo 'from cisco_ai_defense_litellm import proxy_handler_instance' \
+        > /app/config/cisco_ai_defense.py
+
+EXPOSE 4000
+CMD ["litellm", "--config", "/app/config/litellm.yaml", "--host", "0.0.0.0", "--port", "4000"]
+```
+
+For Helm (`oci://ghcr.io/berriai/litellm-helm`), build this image and reference it from `image.repository` / `image.tag`. The chart does not run `pip install` at pod start.
+
+#### Pattern 2 — Stock LiteLLM image with pip install on host + mount
+
+For customers who already run the official `docker.litellm.ai/berriai/litellm:main-latest` image and don't want to (or can't) ship a derived image. The same `pip install` runs once on the host or in CI; the resulting package directory is mounted into the stock image at deploy time.
+
+Run both commands once, in the directory that holds your `litellm.yaml`. The first vendors the wheel into `vendor/`; the second creates the shim file (the shim is **not** in the wheel — you create it yourself):
+
+```bash
+# 1. Vendor the wheel once on the host (or in CI):
+mkdir -p vendor
+pip install --no-deps --target=./vendor "cisco-ai-defense-litellm==0.2.0"
+
+# 2. Create the shim next to your litellm.yaml:
+cat > cisco_ai_defense.py <<'EOF'
+from cisco_ai_defense_litellm import proxy_handler_instance
+EOF
+```
+
+```yaml
+# docker-compose.yml — no derived image required.
+services:
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:main-latest
+    entrypoint: []
+    command: ["litellm", "--config", "/app/config/litellm.yaml", "--host", "0.0.0.0", "--port", "4000"]
+    environment:
+      PYTHONPATH: /opt/ai-defense
+      LITELLM_MASTER_KEY:           ${LITELLM_MASTER_KEY}
+      AI_DEFENSE_CHAT_INSPECT_URL:  ${AI_DEFENSE_CHAT_INSPECT_URL}
+      AI_DEFENSE_CHAT_API_KEY:      ${AI_DEFENSE_CHAT_API_KEY}
+    volumes:
+      - ./vendor:/opt/ai-defense:ro              # pip-installed plugin
+      - ./litellm.yaml:/app/config/litellm.yaml:ro
+      - ./cisco_ai_defense.py:/app/config/cisco_ai_defense.py:ro
+    ports:
+      - "4000:4000"
+```
+
+`PYTHONPATH=/opt/ai-defense` puts the mounted package on `sys.path`, so the shim's `from cisco_ai_defense_litellm import proxy_handler_instance` resolves. Same wheel as Pattern 1, just unpacked to a host volume instead of a Docker layer. No image rebuild required.
+
+For Helm, the same pattern works by serving `vendor/cisco_ai_defense_litellm/` and `cisco_ai_defense.py` from `ConfigMap`s and adding them via `extraVolumes` / `extraVolumeMounts` (with `PYTHONPATH=/opt/ai-defense` in `env`).
+
+#### Picking between Pattern 1 and Pattern 2
+
+| Concern | Pattern 1 (custom image) | Pattern 2 (stock image + mount) |
+|---|---|---|
+| Image | Customer-built `FROM litellm + pip install` | Stock `docker.litellm.ai/berriai/litellm:main-latest`, unmodified |
+| When pip runs | At image build | Once on host / CI |
+| Network at pod start | None | None |
+| Customer policy: "no custom images" | Not a fit | Fits |
+| Best for | Standard production, Helm | Customers already running the official LiteLLM image |
+
+**Then export the AI Defense endpoint and API key before starting the proxy:**
 
 ```bash
 export AI_DEFENSE_CHAT_INSPECT_URL="https://<tenant>.ai-defense.cisco.com/inspect/chat"
 export AI_DEFENSE_CHAT_API_KEY="<your-api-key>"
 
-# Allow-list of model aliases (from `model_list`) and MCP server aliases
-# (from `mcp_servers`) that should be inspected. Anything not listed is
-# passed through unchanged. See "Targeting specific models or MCP servers".
-export AI_DEFENSE_API_MODE="gpt-4o-mini,my_mcp_server"
-
 litellm --config litellm.yaml --port 4000
 ```
 
-Every request whose `model` (or MCP server alias) appears in `AI_DEFENSE_API_MODE` is now inspected before reaching the upstream provider.
+Once the plugin is loaded, every chat completion and MCP `tools/call` request that flows through this LiteLLM proxy is inspected by AI Defense — both the request before it leaves and the response before it returns. To exclude a route, do not configure that model/MCP server in this LiteLLM instance, or do not load the plugin in the LiteLLM stack that serves it.
 
 ### LiteLLM Python SDK mode
 
@@ -140,7 +223,6 @@ All configuration is read from environment variables, so the same package works 
 | `AI_DEFENSE_FAIL_OPEN` | `false` | If `true`, allow the upstream call when AI Defense is unreachable or times out. |
 | `AI_DEFENSE_BLOCK_MODE` | `message` | `message` returns a structured refusal response; `exception` raises so callers fail fast. |
 | `AI_DEFENSE_SCAN_OUTPUTS` | `true` | When `false`, only requests are inspected; responses pass through. |
-| `AI_DEFENSE_API_MODE` | _unset_ | Comma-separated allow-list of model aliases (from `model_list`) and MCP server aliases (from `mcp_servers`) that should be inspected. **When unset or empty, no inspection runs** — every named target is skipped with `target_not_allowed=<name>`. Aliases that look like an AI Defense Gateway target (containing `ai_defense_gateway` or starting with `gateway_`) are auto-skipped regardless of this setting, since the gateway itself performs inspection. |
 | `AI_DEFENSE_LOG_LEVEL` | `INFO` | Log level for the `cisco_ai_defense_litellm` logger. |
 | `AI_DEFENSE_STDOUT_LOGS` | `false` | When `true`, also emit hook logs to stdout with an `AI_DEFENSE_HOOK` prefix and disable propagation, so verdicts are reliably visible in container logs (e.g. `docker compose logs … \| grep AI_DEFENSE_HOOK`). |
 | `AI_DEFENSE_LOG_TEXT` | `false` | When `true`, includes the inspected text content (prompt/response) in log lines. **Keep `false` in production** — enabling it can leak prompt and response data into stdout. |
@@ -150,17 +232,11 @@ All configuration is read from environment variables, so the same package works 
 - `AI_DEFENSE_BLOCK_MODE=message` (default): the hook returns a sanitized refusal message via LiteLLM's standard guardrail surface. The caller sees an HTTP 200 with a "blocked" response — best for end-user chat UIs.
 - `AI_DEFENSE_BLOCK_MODE=exception`: the hook raises, so LiteLLM surfaces an error to the caller. Best for service-to-service traffic where you want callers to retry or fail explicitly.
 
-### Targeting specific models or MCP servers
+### Inspection scope
 
-`AI_DEFENSE_API_MODE` is an explicit allow-list. **Only requests whose `model` alias or MCP server alias is in the list are sent to AI Defense for inspection.** Anything not listed — including the case where `AI_DEFENSE_API_MODE` is unset or empty — is passed through unchanged.
+There is no per-alias allow-list or deny-list. **If `cisco_ai_defense` is loaded as a LiteLLM callback (Proxy) or installed via `install()` (SDK), every request and response that passes through that LiteLLM stack is inspected.** Disable inspection by removing the plugin from your LiteLLM configuration, not by setting an env var.
 
-```bash
-export AI_DEFENSE_API_MODE="gpt-4o-mini,bedrock-claude-sonnet-4-profile,my_mcp_server"
-```
-
-This is the opposite of an opt-out / deny-list: leaving the variable unset disables LiteLLM-side inspection entirely.
-
-**Auto-skipped aliases.** Independently of `AI_DEFENSE_API_MODE`, the hook auto-skips any alias that looks like an AI Defense Gateway target — specifically aliases containing `ai_defense_gateway` or starting with `gateway_` (case-insensitive, hyphens normalized to underscores). These deployments use AI Defense Gateway as the upstream and inspection happens inside the gateway, so running it again in the LiteLLM hook would double-inspect.
+> Pattern B (AI Defense Gateway) deployments do **not** need this plugin — the gateway inspects in-line. Don't load the plugin in a stack that already routes to AI Defense Gateway, or you will double-inspect.
 
 ---
 
@@ -174,7 +250,6 @@ from cisco_ai_defense_litellm import install, AIDefenseLiteLLMHook
 hook: AIDefenseLiteLLMHook = install(
     block_mode="exception",
     scan_outputs=True,
-    api_modes=("gpt-4o-mini",),
 )
 
 print("AI Defense hook installed:", type(hook).__name__)
@@ -237,12 +312,12 @@ This makes verdicts visible to LiteLLM logging, callbacks, and any downstream ob
 
 ## License
 
-Apache-2.0. See [LICENSE](https://github.com/cisco-ai-defense/ai-defense-litellm/blob/main/LICENSE).
+Apache-2.0. See [LICENSE](https://github.com/cisco-aispg/ai-defense-litellm/blob/main/LICENSE).
 
 ---
 
 ## Support
 
-- **Issues and feature requests**: [GitHub Issues](https://github.com/cisco-ai-defense/ai-defense-litellm/issues)
-- **Source code**: [cisco-ai-defense/ai-defense-litellm](https://github.com/cisco-ai-defense/ai-defense-litellm)
+- **Issues and feature requests**: [GitHub Issues](https://github.com/cisco-aispg/ai-defense-litellm/issues)
+- **Source code**: [cisco-aispg/ai-defense-litellm](https://github.com/cisco-aispg/ai-defense-litellm)
 - **Cisco AI Defense product docs**: [https://www.cisco.com/site/us/en/products/security/ai-defense/index.html](https://www.cisco.com/site/us/en/products/security/ai-defense/index.html)
