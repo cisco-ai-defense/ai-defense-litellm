@@ -354,7 +354,7 @@ def build_ai_defense_client_from_env() -> AIDefenseClient:
     chat_inspect_url = os.getenv("AI_DEFENSE_CHAT_INSPECT_URL")
     mcp_inspect_url = os.getenv("AI_DEFENSE_MCP_INSPECT_URL")
     if chat_inspect_url or mcp_inspect_url:
-        timeout = float(os.getenv("AI_DEFENSE_TIMEOUT_SECONDS", "2.0"))
+        timeout = float(os.getenv("AI_DEFENSE_TIMEOUT_SECONDS", "5.0"))
         fail_open = os.getenv("AI_DEFENSE_FAIL_OPEN", "false").lower() in {"1", "true", "yes"}
         default_api_key_header = os.getenv("AI_DEFENSE_API_KEY_HEADER", "X-Cisco-AI-Defense-API-Key")
         chat_api_key = os.getenv("AI_DEFENSE_CHAT_API_KEY", "")
