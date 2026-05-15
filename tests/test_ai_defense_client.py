@@ -257,6 +257,27 @@ class CiscoMCPAIDefenseClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(decision.reason, "MCP request blocked")
         self.assertIn("tool_abuse", decision.categories)
 
+    async def test_decision_parser_treats_jsonrpc_error_as_blocking_error(self):
+        decision = decision_from_mapping(
+            {
+                "jsonrpc": "2.0",
+                "id": "litellm-mcp-tool-response",
+                "error": {
+                    "code": -32600,
+                    "message": "response inspection requires method and params in request body",
+                },
+            }
+        )
+
+        metadata = decision.to_metadata()
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.action, "block")
+        self.assertTrue(decision.error)
+        self.assertIn("ai_defense_error", decision.categories)
+        self.assertTrue(metadata["error"])
+        self.assertIn("response inspection requires method and params", decision.reason)
+
 
 if __name__ == "__main__":
     unittest.main()

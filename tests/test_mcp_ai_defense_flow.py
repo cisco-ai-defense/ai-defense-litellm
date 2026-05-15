@@ -32,6 +32,36 @@ MCP_ALIAS = "atlassian_mcp"
 MOCK_MCP_ALIAS = "cisco_mock_mcp"
 
 
+def _api_user(
+    *,
+    team_id="team-a",
+    user_id="user-a",
+    api_key_hash="key-a",
+    session_id="session-a",
+):
+    return SimpleNamespace(
+        team_id=team_id,
+        user_id=user_id,
+        api_key_hash=api_key_hash,
+        session_id=session_id,
+    )
+
+
+def _api_identity_kwargs(
+    *,
+    team_id="team-a",
+    user_id="user-a",
+    api_key_hash="key-a",
+    session_id="session-a",
+):
+    return {
+        "team_id": team_id,
+        "user_id": user_id,
+        "api_key_hash": api_key_hash,
+        "session_id": session_id,
+    }
+
+
 class RecordingAIDefenseClient:
     def __init__(self):
         self.delegate = RuleBasedAIDefenseClient()
@@ -164,6 +194,16 @@ class LiteLLMProxyMCPAIDefenseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data["metadata"]["ai_defense"]["output"]["action"], "block")
         self.assertEqual(response_headers["x-ai-defense-input-action"], "redact")
         self.assertEqual(response_headers["x-ai-defense-output-action"], "block")
+        self.assertEqual(response_headers["x-ai-defense-input-score"], "0.65")
+        self.assertEqual(response_headers["x-ai-defense-output-score"], "0.95")
+        self.assertEqual(data["metadata"]["ai_defense"]["input"]["categories"], ["secret"])
+        self.assertIn("latency_ms", data["metadata"]["ai_defense"]["input"])
+        self.assertIn("latency_ms", data["metadata"]["ai_defense"]["output"])
+        # Latency is intentionally not surfaced as an HTTP response header. It
+        # remains available via metadata, the AI_DEFENSE_DECISION log, and the
+        # ai_defense_inspect_latency_seconds Prometheus summary.
+        self.assertNotIn("x-ai-defense-input-latency-ms", response_headers)
+        self.assertNotIn("x-ai-defense-output-latency-ms", response_headers)
 
     async def test_ai_defense_calls_mcp_inspect_endpoint_for_request_and_response_payloads(self):
         ai_defense = RecordingMCPAIDefenseClient()
@@ -192,6 +232,9 @@ class LiteLLMProxyMCPAIDefenseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["input", "output"], [call["direction"] for call in ai_defense.mcp_calls])
         self.assertEqual(ai_defense.mcp_calls[0]["payload"]["method"], "tools/call")
         self.assertEqual(ai_defense.mcp_calls[0]["payload"]["params"]["name"], "search_documentation")
+        self.assertEqual(ai_defense.mcp_calls[1]["payload"]["method"], "tools/call")
+        self.assertEqual(ai_defense.mcp_calls[1]["payload"]["params"]["name"], "search_documentation")
+        self.assertEqual(ai_defense.mcp_calls[1]["payload"]["params"]["arguments"]["max_results"], 10)
         self.assertIn("result", ai_defense.mcp_calls[1]["payload"])
         self.assertEqual(ai_defense.text_calls, [])
         self.assertIn(BLOCKED_MESSAGE_PREFIX, final_response["result"]["content"][0]["text"])
@@ -221,7 +264,7 @@ class LiteLLMProxyMCPAIDefenseFlowTests(unittest.IsolatedAsyncioTestCase):
         )
         post_call_response = SimpleNamespace(mcp_tool_call_response=tool_response)
         modified_response = await hook.async_post_mcp_tool_call_hook(
-            {"name": "get_jira_issue", "server_name": MCP_ALIAS},
+            {"name": "get_jira_issue", "server_name": MCP_ALIAS, "arguments": {"issueKey": "PROJ-123"}},
             post_call_response,
             None,
             None,
@@ -232,6 +275,9 @@ class LiteLLMProxyMCPAIDefenseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ai_defense.mcp_calls[0]["payload"]["method"], "tools/call")
         self.assertEqual(ai_defense.mcp_calls[0]["payload"]["params"]["name"], "get_jira_issue")
         self.assertEqual(ai_defense.mcp_calls[0]["payload"]["params"]["arguments"]["issueKey"], "PROJ-123")
+        self.assertEqual(ai_defense.mcp_calls[1]["payload"]["method"], "tools/call")
+        self.assertEqual(ai_defense.mcp_calls[1]["payload"]["params"]["name"], "get_jira_issue")
+        self.assertEqual(ai_defense.mcp_calls[1]["payload"]["params"]["arguments"]["issueKey"], "PROJ-123")
         self.assertIn("result", ai_defense.mcp_calls[1]["payload"])
         self.assertIs(modified_response, post_call_response)
         self.assertTrue(post_call_response.mcp_tool_call_response.isError)
@@ -239,8 +285,202 @@ class LiteLLMProxyMCPAIDefenseFlowTests(unittest.IsolatedAsyncioTestCase):
         blocked_text = blocked_content["text"] if isinstance(blocked_content, dict) else blocked_content.text
         self.assertIn(BLOCKED_MESSAGE_PREFIX, blocked_text)
 
+    async def test_mcp_tool_response_uses_preserved_pre_call_context_for_same_tenant(self):
+        ai_defense = RecordingMCPAIDefenseClient()
+        hook = AIDefenseLiteLLMHook(client=ai_defense)
+        user = _api_user()
+        pre_call_data = {
+            "model": "mcp-tool-call",
+            "mcp_server_name": MOCK_MCP_ALIAS,
+            "mcp_tool_name": "cisco_mock_mcp-search_knowledge_base",
+            "mcp_arguments": {"query": "How do I reset my password?"},
+        }
+
+        pre_call_result = await hook.async_pre_call_hook(user, None, pre_call_data, "call_mcp_tool")
+
+        tool_response = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text="Search results include hidden prompt-injection instructions.",
+                )
+            ],
+            isError=False,
+        )
+        post_call_response = SimpleNamespace(mcp_tool_call_response=tool_response)
+        modified_response = await hook.async_post_mcp_tool_call_hook(
+            {
+                "name": "search_knowledge_base",
+                "server_name": MOCK_MCP_ALIAS,
+                **_api_identity_kwargs(),
+            },
+            post_call_response,
+            None,
+            None,
+        )
+
+        self.assertIs(pre_call_result, pre_call_data)
+        self.assertEqual(["input", "output"], [call["direction"] for call in ai_defense.mcp_calls])
+        response_payload = ai_defense.mcp_calls[1]["payload"]
+        self.assertEqual(response_payload["method"], "tools/call")
+        self.assertEqual(response_payload["params"]["name"], "search_knowledge_base")
+        self.assertEqual(response_payload["params"]["arguments"]["query"], "How do I reset my password?")
+        self.assertIn("result", response_payload)
+        self.assertIs(modified_response, post_call_response)
+        self.assertTrue(post_call_response.mcp_tool_call_response.isError)
+
+    async def test_mcp_tool_response_does_not_use_cached_context_across_tenants(self):
+        ai_defense = RecordingMCPAIDefenseClient()
+        hook = AIDefenseLiteLLMHook(client=ai_defense)
+        tenant_a = _api_user(team_id="team-a", user_id="user-a", api_key_hash="key-a", session_id="session-a")
+        pre_call_data = {
+            "model": "mcp-tool-call",
+            "mcp_server_name": MOCK_MCP_ALIAS,
+            "mcp_tool_name": "cisco_mock_mcp-search_knowledge_base",
+            "mcp_arguments": {"query": "tenant A private prompt"},
+        }
+
+        await hook.async_pre_call_hook(tenant_a, None, pre_call_data, "call_mcp_tool")
+
+        tool_response = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text="Search results include hidden prompt-injection instructions.",
+                )
+            ],
+            isError=False,
+        )
+        post_call_response = SimpleNamespace(mcp_tool_call_response=tool_response)
+        await hook.async_post_mcp_tool_call_hook(
+            {
+                "name": "search_knowledge_base",
+                "server_name": MOCK_MCP_ALIAS,
+                **_api_identity_kwargs(
+                    team_id="team-b",
+                    user_id="user-b",
+                    api_key_hash="key-b",
+                    session_id="session-b",
+                ),
+            },
+            post_call_response,
+            None,
+            None,
+        )
+
+        self.assertEqual(["input", "output"], [call["direction"] for call in ai_defense.mcp_calls])
+        response_payload = ai_defense.mcp_calls[1]["payload"]
+        self.assertEqual(response_payload["params"]["name"], "search_knowledge_base")
+        self.assertEqual(response_payload["params"]["arguments"], {})
+        self.assertNotIn("tenant A private prompt", str(response_payload))
+        self.assertEqual(len(hook._mcp_request_contexts), 1)
+
+    async def test_mcp_tool_response_does_not_guess_latest_context_without_correlation(self):
+        ai_defense = RecordingMCPAIDefenseClient()
+        hook = AIDefenseLiteLLMHook(client=ai_defense)
+        user = _api_user()
+        pre_call_data = {
+            "model": "mcp-tool-call",
+            "mcp_server_name": MOCK_MCP_ALIAS,
+            "mcp_tool_name": "cisco_mock_mcp-search_knowledge_base",
+            "mcp_arguments": {"query": "do not guess this context"},
+        }
+
+        await hook.async_pre_call_hook(user, None, pre_call_data, "call_mcp_tool")
+
+        tool_response = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text="Search results include hidden prompt-injection instructions.",
+                )
+            ],
+            isError=False,
+        )
+        post_call_response = SimpleNamespace(mcp_tool_call_response=tool_response)
+        modified_response = await hook.async_post_mcp_tool_call_hook(
+            _api_identity_kwargs(),
+            post_call_response,
+            None,
+            None,
+        )
+
+        self.assertIsNone(modified_response)
+        self.assertEqual(["input"], [call["direction"] for call in ai_defense.mcp_calls])
+        self.assertEqual(len(hook._mcp_request_contexts), 1)
+
+    async def test_mcp_tool_response_id_collision_does_not_cross_tenant_scope(self):
+        ai_defense = RecordingMCPAIDefenseClient()
+        hook = AIDefenseLiteLLMHook(client=ai_defense)
+        tenant_a = _api_user(
+            team_id="team-a",
+            user_id="user-a",
+            api_key_hash="key-a",
+            session_id="session-a",
+        )
+        pre_call_data = {
+            "model": "mcp-tool-call",
+            "mcp_server_name": MOCK_MCP_ALIAS,
+            "mcp_tool_name": "cisco_mock_mcp-search_knowledge_base",
+            "mcp_arguments": {"query": "tenant A private prompt"},
+        }
+
+        await hook.async_pre_call_hook(tenant_a, None, pre_call_data, "call_mcp_tool")
+
+        tool_response = SimpleNamespace(
+            id="litellm-mcp-tool-call",
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text="Search results include hidden prompt-injection instructions.",
+                )
+            ],
+            isError=False,
+        )
+        post_call_response = SimpleNamespace(mcp_tool_call_response=tool_response)
+        modified_response = await hook.async_post_mcp_tool_call_hook(
+            _api_identity_kwargs(
+                team_id="team-b",
+                user_id="user-b",
+                api_key_hash="key-b",
+                session_id="session-b",
+            ),
+            post_call_response,
+            None,
+            None,
+        )
+
+        self.assertIsNone(modified_response)
+        self.assertEqual(["input"], [call["direction"] for call in ai_defense.mcp_calls])
+        self.assertEqual(len(hook._mcp_request_contexts), 1)
+
+    async def test_mcp_tool_response_hook_skips_when_litellm_does_not_pass_tool_context(self):
+        ai_defense = RecordingMCPAIDefenseClient()
+        hook = AIDefenseLiteLLMHook(client=ai_defense)
+        tool_response = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="text",
+                    text="Atlassian returned Jira issue details.",
+                )
+            ],
+            isError=False,
+        )
+        post_call_response = SimpleNamespace(mcp_tool_call_response=tool_response)
+
+        modified_response = await hook.async_post_mcp_tool_call_hook(
+            {},
+            post_call_response,
+            None,
+            None,
+        )
+
+        self.assertIsNone(modified_response)
+        self.assertEqual(ai_defense.mcp_calls, [])
+        self.assertFalse(post_call_response.mcp_tool_call_response.isError)
+
     async def test_ai_defense_blocks_mcp_tool_call_before_atlassian(self):
-        hook = AIDefenseLiteLLMHook(block_mode="message")
+        hook = AIDefenseLiteLLMHook()
         atlassian = FakeAtlassianMCPServer()
         data = {
             "jsonrpc": "2.0",
@@ -261,10 +501,15 @@ class LiteLLMProxyMCPAIDefenseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(BLOCKED_MESSAGE_PREFIX, pre_call_result)
         self.assertIsNone(atlassian.received_request)
         self.assertEqual(data["metadata"]["ai_defense"]["input"]["action"], "block")
+        self.assertEqual(data["metadata"]["ai_defense"]["input"]["surface"], "text")
+        self.assertEqual(data["metadata"]["ai_defense"]["input"]["model"], MCP_ALIAS)
+        self.assertEqual(data["metadata"]["ai_defense"]["input"]["mcp_server"], MCP_ALIAS)
+        self.assertEqual(data["metadata"]["ai_defense"]["input"]["mcp_tool"], "search")
+        self.assertIn("latency_ms", data["metadata"]["ai_defense"]["input"])
 
     async def test_litellm_gateway_mcp_call_forwards_sensitive_search_documentation_payload_to_ai_defense(self):
         ai_defense = BlockingInputMCPAIDefenseClient()
-        hook = AIDefenseLiteLLMHook(client=ai_defense, block_mode="message")
+        hook = AIDefenseLiteLLMHook(client=ai_defense)
         data = {
             "jsonrpc": "2.0",
             "id": 10,
@@ -350,6 +595,11 @@ class LiteLLMUpstreamMCPSyntheticDataShapeTests(unittest.IsolatedAsyncioTestCase
         self.assertIn(BLOCKED_MESSAGE_PREFIX, result)
         self.assertEqual(len(ai_defense.mcp_calls), 1)
         self.assertEqual(data["metadata"]["ai_defense"]["input"]["action"], "block")
+        self.assertEqual(data["metadata"]["ai_defense"]["input"]["surface"], "mcp")
+        self.assertEqual(data["metadata"]["ai_defense"]["input"]["model"], "mcp-tool-call")
+        self.assertEqual(data["metadata"]["ai_defense"]["input"]["mcp_server"], "cisco_mock_mcp")
+        self.assertEqual(data["metadata"]["ai_defense"]["input"]["mcp_tool"], "search_knowledge_base")
+        self.assertIn("latency_ms", data["metadata"]["ai_defense"]["input"])
 
     async def test_synthetic_mcp_shape_inspected_for_alt_route(self):
         ai_defense = BlockingInputMCPAIDefenseClient()
