@@ -49,8 +49,8 @@ In both modes the hook validates the request before the upstream model call, val
 - **Drop-in LiteLLM hook**: Single callback covers chat, completion, embedding, and MCP traffic; no per-route wiring.
 - **Proxy and SDK parity**: The same `AIDefenseLiteLLMHook` runs as a LiteLLM proxy callback or as an in-process SDK hook.
 - **Request and response inspection**: Sends chat payloads to `/inspect/chat` and MCP JSON-RPC payloads to `/inspect/mcp`.
-- **Configurable enforcement**: Block, sanitize, or pass-through per AI Defense verdict; choose between `message`-style blocks and exception-raising blocks.
-- **Selective targeting**: Restrict enforcement to specific model aliases or MCP server aliases via env var or constructor argument.
+- **Policy enforcement**: Block, redact, or pass through per AI Defense verdict; request blocks surface as proxy `4xx` responses or SDK exceptions.
+- **Stack-level activation**: Loading the callback inspects every supported request and response through that LiteLLM stack.
 - **Fail-open / fail-closed**: Configure how the hook should behave when AI Defense is unreachable or times out.
 - **Structured logging and metadata**: Records every decision under `metadata["ai_defense"]` on the LiteLLM request so it surfaces in LiteLLM logs and downstream observability.
 - **Async-native**: Built on LiteLLM's async hook surface; no extra thread pools.
@@ -106,7 +106,7 @@ Standard production path. Pip install runs once at image build; the resulting im
 ```dockerfile
 FROM docker.litellm.ai/berriai/litellm:main-latest
 
-ARG CISCO_AI_DEFENSE_LITELLM_VERSION=0.2.0
+ARG CISCO_AI_DEFENSE_LITELLM_VERSION=0.3.0
 RUN pip install --no-cache-dir \
         "cisco-ai-defense-litellm[proxy]==${CISCO_AI_DEFENSE_LITELLM_VERSION}"
 
@@ -133,7 +133,7 @@ Run both commands once, in the directory that holds your `litellm.yaml`. The fir
 ```bash
 # 1. Vendor the wheel once on the host (or in CI):
 mkdir -p vendor
-pip install --no-deps --target=./vendor "cisco-ai-defense-litellm==0.2.0"
+pip install --no-deps --target=./vendor "cisco-ai-defense-litellm==0.3.0"
 
 # 2. Create the shim next to your litellm.yaml:
 cat > cisco_ai_defense.py <<'EOF'
@@ -219,18 +219,17 @@ All configuration is read from environment variables, so the same package works 
 | `AI_DEFENSE_CHAT_API_KEY` | _unset_ | API key sent to the chat inspect endpoint. |
 | `AI_DEFENSE_MCP_API_KEY` | _unset_ | API key sent to the MCP inspect endpoint. |
 | `AI_DEFENSE_API_KEY_HEADER` | `X-Cisco-AI-Defense-API-Key` | Header name used to pass the API key. |
-| `AI_DEFENSE_TIMEOUT_SECONDS` | `2.0` | Per-request HTTP timeout when calling AI Defense. |
+| `AI_DEFENSE_TIMEOUT_SECONDS` | `5.0` | Per-request HTTP timeout when calling AI Defense. |
 | `AI_DEFENSE_FAIL_OPEN` | `false` | If `true`, allow the upstream call when AI Defense is unreachable or times out. |
-| `AI_DEFENSE_BLOCK_MODE` | `message` | `message` returns a structured refusal response; `exception` raises so callers fail fast. |
 | `AI_DEFENSE_SCAN_OUTPUTS` | `true` | When `false`, only requests are inspected; responses pass through. |
+| `AI_DEFENSE_MCP_CONTEXT_CACHE_SIZE` | `512` | Maximum MCP request contexts retained in memory so later tool-response scans can include the original `tools/call` method and params. Set `0` to disable caching entirely (responses are then inspected without the original request context). |
+| `AI_DEFENSE_MCP_CONTEXT_TTL_SECONDS` | `120` | Maximum age for retained MCP request contexts. Expired entries are discarded before lookup. The cache is process-local and in-memory only (never persisted). |
+| `AI_DEFENSE_MCP_CONTEXT_MAX_BYTES` | `65536` | Maximum serialized size of a single retained MCP request context. Larger contexts are not cached. |
+
+> **Privacy note.** While caching is enabled, the plugin holds the MCP `method`, `params` (including arguments — typically the user's prompt to the tool), and `id` of pending `tools/call` requests in memory for at most `AI_DEFENSE_MCP_CONTEXT_TTL_SECONDS` seconds, scoped per (`team_id`, `user_id`, `api_key_hash`, `session_id`). Set `AI_DEFENSE_MCP_CONTEXT_CACHE_SIZE=0` to opt out entirely.
 | `AI_DEFENSE_LOG_LEVEL` | `INFO` | Log level for the `cisco_ai_defense_litellm` logger. |
 | `AI_DEFENSE_STDOUT_LOGS` | `false` | When `true`, also emit hook logs to stdout with an `AI_DEFENSE_HOOK` prefix and disable propagation, so verdicts are reliably visible in container logs (e.g. `docker compose logs … \| grep AI_DEFENSE_HOOK`). |
 | `AI_DEFENSE_LOG_TEXT` | `false` | When `true`, includes the inspected text content (prompt/response) in log lines. **Keep `false` in production** — enabling it can leak prompt and response data into stdout. |
-
-### Block modes
-
-- `AI_DEFENSE_BLOCK_MODE=message` (default): the hook returns a sanitized refusal message via LiteLLM's standard guardrail surface. The caller sees an HTTP 200 with a "blocked" response — best for end-user chat UIs.
-- `AI_DEFENSE_BLOCK_MODE=exception`: the hook raises, so LiteLLM surfaces an error to the caller. Best for service-to-service traffic where you want callers to retry or fail explicitly.
 
 ### Inspection scope
 
@@ -248,7 +247,6 @@ There is no per-alias allow-list or deny-list. **If `cisco_ai_defense` is loaded
 from cisco_ai_defense_litellm import install, AIDefenseLiteLLMHook
 
 hook: AIDefenseLiteLLMHook = install(
-    block_mode="exception",
     scan_outputs=True,
 )
 
@@ -282,12 +280,45 @@ Every decision is recorded on the LiteLLM request dict under:
 
 ```python
 data["metadata"]["ai_defense"] = {
-    "input":  {"action": "allow" | "block" | "sanitize", ...},
-    "output": {"action": "allow" | "block" | "sanitize", ...},
+    "input": {
+        "allowed": bool,
+        "action": "allow" | "block" | "redact",
+        "score": float,
+        "categories": list[str],
+        "latency_ms": float,
+        "surface": "chat" | "mcp" | "text",
+        "error": bool,
+        ...
+    },
+    "output": {...},
 }
 ```
 
 This makes verdicts visible to LiteLLM logging, callbacks, and any downstream observability you have wired into LiteLLM.
+
+With `AI_DEFENSE_STDOUT_LOGS=true`, each verdict also emits a structured `AI_DEFENSE_DECISION` log line as a single JSON object so it can be ingested by Splunk / ELK / Datadog without custom parsing. The fields include `direction`, `surface`, `stage`, `action`, `allowed`, `score`, `categories`, `latency_ms`, `error`, `model`, `call_type`, `mcp_server`, and `mcp_tool`. When response headers are available, the hook keeps them intentionally small: `x-ai-defense-<input|output>-action` and `x-ai-defense-<input|output>-score`. Latency is intentionally **not** exposed as a response header (to avoid creating a network-observable side channel) and is instead available via the metadata above, the `latency_ms` field in the decision log, and the Prometheus summary below.
+
+When `prometheus_client` is importable (which is the case as soon as the customer enables LiteLLM's built-in `prometheus` callback), the hook automatically publishes the following series — there is no separate AI Defense opt-in:
+
+```text
+ai_defense_decisions_total{direction,surface,stage,action,allowed,error}
+ai_defense_blocks_total{direction,surface,stage,action,allowed,error}
+ai_defense_errors_total{direction,surface,stage,action,allowed,error}
+ai_defense_inspect_latency_seconds_sum{direction,surface,stage,action,allowed,error}
+ai_defense_inspect_latency_seconds_count{direction,surface,stage,action,allowed,error}
+```
+
+The latency metric is a Prometheus `Summary` (no `_bucket` series). Aggregate it via the standard `_sum` / `_count` pattern:
+
+```promql
+rate(ai_defense_inspect_latency_seconds_sum[5m])
+  / ignoring()
+rate(ai_defense_inspect_latency_seconds_count[5m])
+```
+
+For proxy deployments that enable LiteLLM's `prometheus` callback, LiteLLM may also expose its own built-in metrics, including bucket-heavy series such as `litellm_guardrail_latency_seconds`. To trim that down, see the [LiteLLM Prometheus docs](https://docs.litellm.ai/docs/proxy/prometheus) for the supported `prometheus_metrics_config` schema in your LiteLLM version. The AI Defense `ai_defense_*` series above are independent of `prometheus_metrics_config` and are always published whenever `prometheus_client` is importable.
+
+Restrict your LiteLLM `/metrics/` endpoint to your monitoring network — it exposes operational cardinality and timing data that should not be reachable from the public internet.
 
 ---
 
@@ -301,8 +332,8 @@ This makes verdicts visible to LiteLLM logging, callbacks, and any downstream ob
 
 ## Error Handling
 
-- **AI Defense returns block**: hook either returns a refusal message or raises, per `AI_DEFENSE_BLOCK_MODE`.
-- **AI Defense returns sanitize**: hook mutates the request or response payload in place and lets the call continue.
+- **AI Defense returns block**: the hook raises `litellm.BadRequestError`. In the protected proxy LiteLLM surfaces this as an HTTP 4xx response (the exact status — typically `400` — depends on your LiteLLM proxy version); in SDK mode `litellm.completion` raises.
+- **AI Defense returns redact**: hook mutates the request or response payload in place and lets the call continue.
 - **AI Defense unreachable or timeout**:
   - `AI_DEFENSE_FAIL_OPEN=false` (default): the hook raises, blocking the call.
   - `AI_DEFENSE_FAIL_OPEN=true`: the hook logs a warning and lets the call through.

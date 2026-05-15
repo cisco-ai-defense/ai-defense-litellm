@@ -46,6 +46,7 @@ class AIDefenseDecision:
     score: float = 0.0
     categories: Tuple[str, ...] = ()
     sanitized_text: Optional[str] = None
+    error: bool = False
     raw: Mapping[str, Any] = field(default_factory=dict)
 
     def to_metadata(self) -> Dict[str, Any]:
@@ -55,6 +56,7 @@ class AIDefenseDecision:
             "reason": self.reason,
             "score": self.score,
             "categories": list(self.categories),
+            "error": self.error,
         }
 
 
@@ -163,6 +165,7 @@ class CiscoMCPAIDefenseClient:
                     reason=f"AI Defense unavailable, fail-open enabled: {exc}",
                     score=0.0,
                     categories=("ai_defense_unavailable",),
+                    error=True,
                 )
             return AIDefenseDecision(
                 allowed=False,
@@ -170,6 +173,7 @@ class CiscoMCPAIDefenseClient:
                 reason=f"AI Defense unavailable, fail-closed: {exc}",
                 score=1.0,
                 categories=("ai_defense_unavailable",),
+                error=True,
             )
 
     def _inspect_mcp_sync(self, payload: Mapping[str, Any]) -> AIDefenseDecision:
@@ -191,7 +195,7 @@ class CiscoMCPAIDefenseClient:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
 
-        return decision_from_mapping(json.loads(body))
+        return decision_from_mapping(json.loads(body), fail_open=self.fail_open)
 
 
 class CiscoChatAIDefenseClient:
@@ -233,7 +237,6 @@ class CiscoChatAIDefenseClient:
         direction: str,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
-        del direction, metadata
         try:
             return await asyncio.to_thread(self._inspect_chat_sync, payload)
         except Exception as exc:
@@ -244,6 +247,7 @@ class CiscoChatAIDefenseClient:
                     reason=f"AI Defense unavailable, fail-open enabled: {exc}",
                     score=0.0,
                     categories=("ai_defense_unavailable",),
+                    error=True,
                 )
             return AIDefenseDecision(
                 allowed=False,
@@ -251,6 +255,7 @@ class CiscoChatAIDefenseClient:
                 reason=f"AI Defense unavailable, fail-closed: {exc}",
                 score=1.0,
                 categories=("ai_defense_unavailable",),
+                error=True,
             )
 
     def _inspect_chat_sync(self, payload: Mapping[str, Any]) -> AIDefenseDecision:
@@ -272,7 +277,7 @@ class CiscoChatAIDefenseClient:
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
 
-        return decision_from_mapping(json.loads(body))
+        return decision_from_mapping(json.loads(body), fail_open=self.fail_open)
 
 
 class CiscoCompositeAIDefenseClient:
@@ -325,7 +330,34 @@ class CiscoCompositeAIDefenseClient:
         return await self.mcp_client.inspect_mcp(payload, direction=direction, metadata=metadata)
 
 
-def decision_from_mapping(payload: Mapping[str, Any]) -> AIDefenseDecision:
+def decision_from_mapping(payload: Mapping[str, Any], *, fail_open: bool = False) -> AIDefenseDecision:
+    jsonrpc_error = _jsonrpc_error_payload(payload)
+    if jsonrpc_error is not None:
+        # The Inspect API returned a JSON-RPC error envelope inside an HTTP 200.
+        # Treat it the same way we treat an unreachable Inspect API: fail-open
+        # callers continue with an allow + error=True decision so observability
+        # still records the failure, while fail-closed callers block.
+        reason = _jsonrpc_error_reason(jsonrpc_error)
+        if fail_open:
+            return AIDefenseDecision(
+                allowed=True,
+                action="allow",
+                reason=f"AI Defense returned an error, fail-open enabled: {reason}",
+                score=0.0,
+                categories=("ai_defense_error",),
+                error=True,
+                raw=dict(payload),
+            )
+        return AIDefenseDecision(
+            allowed=False,
+            action="block",
+            reason=reason,
+            score=1.0,
+            categories=("ai_defense_error",),
+            error=True,
+            raw=dict(payload),
+        )
+
     decision_payload = _decision_payload(payload)
     action = _decision_action(decision_payload)
     allowed = _decision_allowed(decision_payload, action)
@@ -346,6 +378,7 @@ def decision_from_mapping(payload: Mapping[str, Any]) -> AIDefenseDecision:
         score=score,
         categories=tuple(str(category) for category in categories),
         sanitized_text=sanitized_text if isinstance(sanitized_text, str) else None,
+        error=bool(decision_payload.get("error") or decision_payload.get("is_error") or decision_payload.get("isError")),
         raw=dict(payload),
     )
 
@@ -512,3 +545,25 @@ def _decision_score(payload: Mapping[str, Any]) -> float:
         return float(raw_score or 0.0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _jsonrpc_error_payload(payload: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    error = payload.get("error")
+    if isinstance(error, Mapping):
+        return error
+    result = payload.get("result")
+    if isinstance(result, Mapping):
+        error = result.get("error")
+        if isinstance(error, Mapping):
+            return error
+    return None
+
+
+def _jsonrpc_error_reason(error: Mapping[str, Any]) -> str:
+    message = error.get("message")
+    if isinstance(message, str) and message:
+        return f"AI Defense returned an error: {message}"
+    code = error.get("code")
+    if code is not None:
+        return f"AI Defense returned an error: {code}"
+    return "AI Defense returned an error"
