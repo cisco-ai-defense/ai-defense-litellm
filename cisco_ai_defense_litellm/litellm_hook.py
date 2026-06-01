@@ -1,19 +1,3 @@
-# Copyright 2026 Cisco Systems, Inc. and its affiliates
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-# SPDX-License-Identifier: Apache-2.0
-
 from __future__ import annotations
 
 import asyncio
@@ -28,7 +12,6 @@ import threading
 import time
 import uuid
 from collections import OrderedDict
-from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional
 
 from .ai_defense_client import AIDefenseClient, AIDefenseDecision, build_ai_defense_client_from_env
@@ -94,17 +77,17 @@ def _configure_stdout_logging() -> None:
 _configure_stdout_logging()
 
 
-@dataclass
 class TextItem:
-    text: str
-    set_text: Callable[[str], None]
+    def __init__(self, text: str, set_text: Callable[[str], None]) -> None:
+        self.text = text
+        self.set_text = set_text
 
 
-@dataclass(frozen=True)
 class InspectionResult:
-    decision: AIDefenseDecision
-    latency_ms: float
-    surface: str
+    def __init__(self, decision: AIDefenseDecision, latency_ms: float, surface: str) -> None:
+        self.decision = decision
+        self.latency_ms = latency_ms
+        self.surface = surface
 
 
 class _AIDefensePrometheusMetrics:
@@ -477,13 +460,12 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
             )
 
             if not chat_decision.allowed:
-                _replace_response_text_with_blocked_message(response, chat_decision)
                 LOGGER.warning(
                     "AI Defense blocked chat response before returning to client: reason=%s categories=%s",
                     chat_decision.reason,
                     ",".join(chat_decision.categories) or "none",
                 )
-                return response
+                raise _sdk_blocked_error(self._blocked_message(chat_decision), model=data.get("model"))
 
             if _apply_chat_response_mutation(response, chat_decision):
                 LOGGER.debug("AI Defense mutated chat response before returning to client")
@@ -510,14 +492,16 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
             )
 
             if not decision.allowed:
-                item.set_text(self._blocked_message(decision))
                 LOGGER.warning(
                     "AI Defense blocked response before returning to client: index=%s reason=%s categories=%s",
                     inspected_count,
                     decision.reason,
                     ",".join(decision.categories) or "none",
                 )
-                break
+                if isinstance(response, dict) and _is_mcp_payload(response):
+                    _replace_mcp_response_with_blocked_message(response, decision)
+                    return response
+                raise _sdk_blocked_error(self._blocked_message(decision), model=data.get("model"))
 
             if decision.action == "redact" and decision.sanitized_text:
                 item.set_text(decision.sanitized_text)
@@ -1618,17 +1602,6 @@ def _apply_messages_to_response(response: Any, messages: list[Mapping[str, Any]]
     return changed
 
 
-def _replace_response_text_with_blocked_message(response: Any, decision: AIDefenseDecision) -> None:
-    blocked_message = AIDefenseLiteLLMHook._blocked_message(decision)
-    changed = False
-    for item in _response_text_items(response):
-        item.set_text(blocked_message)
-        changed = True
-
-    if not changed and isinstance(response, dict):
-        response["output_text"] = blocked_message
-
-
 def _set_first_text_item(items: Iterator[TextItem], value: str) -> bool:
     for item in items:
         item.set_text(value)
@@ -1720,7 +1693,8 @@ def _replace_mcp_response_with_blocked_message(response: Dict[str, Any], decisio
                 "type": "text",
                 "text": AIDefenseLiteLLMHook._blocked_message(decision),
             }
-        ]
+        ],
+        "isError": True,
     }
 
 
