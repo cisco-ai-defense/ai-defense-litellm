@@ -1,19 +1,3 @@
-# Copyright 2026 Cisco Systems, Inc. and its affiliates
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-# SPDX-License-Identifier: Apache-2.0
-
 import copy
 import sys
 import unittest
@@ -22,7 +6,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cisco_ai_defense_litellm.ai_defense_client import AIDefenseDecision, RuleBasedAIDefenseClient
+from cisco_ai_defense_litellm.ai_defense_client import AIDefenseDecision
 from cisco_ai_defense_litellm.litellm_hook import (
     AIDefenseLiteLLMHook,
     BLOCKED_MESSAGE_PREFIX,
@@ -64,7 +48,6 @@ def _api_identity_kwargs(
 
 class RecordingAIDefenseClient:
     def __init__(self):
-        self.delegate = RuleBasedAIDefenseClient()
         self.calls = []
 
     async def inspect(self, text, *, direction, metadata=None):
@@ -75,7 +58,24 @@ class RecordingAIDefenseClient:
                 "metadata": dict(metadata or {}),
             }
         )
-        return await self.delegate.inspect(text, direction=direction, metadata=metadata)
+        if "api_key=sk-atlassian-secret" in text:
+            return AIDefenseDecision(
+                allowed=True,
+                action="redact",
+                reason="AI Defense test decision redacted the content",
+                score=0.65,
+                categories=("secret",),
+                sanitized_text=text.replace("api_key=sk-atlassian-secret.", "api_key=[REDACTED]"),
+            )
+        if "Ignore previous" in text or "exfiltrate secrets" in text:
+            return AIDefenseDecision(
+                allowed=False,
+                action="block",
+                reason="AI Defense test decision blocked the content",
+                score=0.95,
+                categories=("prompt_injection",),
+            )
+        return AIDefenseDecision(allowed=True)
 
 
 class RecordingMCPAIDefenseClient:
@@ -189,6 +189,7 @@ class LiteLLMProxyMCPAIDefenseFlowTests(unittest.IsolatedAsyncioTestCase):
             BLOCKED_MESSAGE_PREFIX,
             final_response["result"]["content"][0]["text"],
         )
+        self.assertTrue(final_response["result"]["isError"])
         self.assertEqual(["input", "output"], [call["direction"] for call in ai_defense.calls])
         self.assertEqual(data["metadata"]["ai_defense"]["input"]["action"], "redact")
         self.assertEqual(data["metadata"]["ai_defense"]["output"]["action"], "block")
@@ -238,6 +239,7 @@ class LiteLLMProxyMCPAIDefenseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("result", ai_defense.mcp_calls[1]["payload"])
         self.assertEqual(ai_defense.text_calls, [])
         self.assertIn(BLOCKED_MESSAGE_PREFIX, final_response["result"]["content"][0]["text"])
+        self.assertTrue(final_response["result"]["isError"])
         self.assertEqual(data["metadata"]["ai_defense"]["input"]["action"], "allow")
         self.assertEqual(data["metadata"]["ai_defense"]["output"]["action"], "block")
 
@@ -480,7 +482,7 @@ class LiteLLMProxyMCPAIDefenseFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(post_call_response.mcp_tool_call_response.isError)
 
     async def test_ai_defense_blocks_mcp_tool_call_before_atlassian(self):
-        hook = AIDefenseLiteLLMHook()
+        hook = AIDefenseLiteLLMHook(client=RecordingAIDefenseClient())
         atlassian = FakeAtlassianMCPServer()
         data = {
             "jsonrpc": "2.0",

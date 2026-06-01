@@ -1,53 +1,33 @@
-# Copyright 2026 Cisco Systems, Inc. and its affiliates
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-#
-# SPDX-License-Identifier: Apache-2.0
-
 from __future__ import annotations
 
 import asyncio
 import json
 import os
-import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, Mapping, Optional, Protocol, Tuple
+from typing import Any, Dict, Mapping, Optional, Protocol
 
 
-DEFAULT_BLOCK_PATTERNS: Tuple[Tuple[str, str], ...] = (
-    ("prompt_injection", r"\b(ignore|bypass|override)\b.{0,80}\b(previous|prior|system|developer)\b.{0,80}\b(instruction|message|prompt|policy)s?\b"),
-    ("secret_exfiltration", r"\b(exfiltrate|leak|dump|print|reveal|steal)\b.{0,80}\b(secret|token|credential|password|api[_ -]?key)s?\b"),
-    ("tool_abuse", r"\b(call|use|invoke)\b.{0,80}\btool\b.{0,80}\b(without|bypass|ignore)\b.{0,80}\bapproval\b"),
-)
-
-SECRET_VALUE_PATTERN = re.compile(
-    r"(?P<name>\b(?:api[_-]?key|secret|password|token|bearer)\b\s*[:=]\s*)(?P<value>[A-Za-z0-9_\-./+=]{6,})",
-    re.IGNORECASE,
-)
-
-
-@dataclass(frozen=True)
 class AIDefenseDecision:
-    allowed: bool
-    action: str = "allow"
-    reason: str = "No policy violations detected"
-    score: float = 0.0
-    categories: Tuple[str, ...] = ()
-    sanitized_text: Optional[str] = None
-    error: bool = False
-    raw: Mapping[str, Any] = field(default_factory=dict)
+    def __init__(
+        self,
+        allowed: bool,
+        action: str = "allow",
+        reason: str = "No policy violations detected",
+        score: float = 0.0,
+        categories: tuple[str, ...] = (),
+        sanitized_text: Optional[str] = None,
+        error: bool = False,
+        raw: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        self.allowed = allowed
+        self.action = action
+        self.reason = reason
+        self.score = score
+        self.categories = categories
+        self.sanitized_text = sanitized_text
+        self.error = error
+        self.raw = raw or {}
 
     def to_metadata(self) -> Dict[str, Any]:
         return {
@@ -71,11 +51,8 @@ class AIDefenseClient(Protocol):
         ...
 
 
-class RuleBasedAIDefenseClient:
-    """Local deterministic client used by unit tests and offline smoke checks."""
-
-    def __init__(self, block_patterns: Iterable[Tuple[str, str]] = DEFAULT_BLOCK_PATTERNS):
-        self._block_patterns = tuple((category, re.compile(pattern, re.IGNORECASE | re.DOTALL)) for category, pattern in block_patterns)
+class UnconfiguredAIDefenseClient:
+    """Error client used when no AI Defense Inspect endpoint is configured."""
 
     async def inspect(
         self,
@@ -84,36 +61,14 @@ class RuleBasedAIDefenseClient:
         direction: str,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
-        del direction, metadata
-        if not text:
-            return AIDefenseDecision(allowed=True)
-
-        matched_categories = [category for category, pattern in self._block_patterns if pattern.search(text)]
-        if matched_categories:
-            return AIDefenseDecision(
-                allowed=False,
-                action="block",
-                reason="Potential prompt-injection or secret-exfiltration request detected",
-                score=0.95,
-                categories=tuple(matched_categories),
-            )
-
-        sanitized = self.redact(text)
-        if sanitized != text:
-            return AIDefenseDecision(
-                allowed=True,
-                action="redact",
-                reason="Sensitive value redacted before forwarding",
-                score=0.65,
-                categories=("secret",),
-                sanitized_text=sanitized,
-            )
-
-        return AIDefenseDecision(allowed=True)
-
-    @staticmethod
-    def redact(text: str) -> str:
-        return SECRET_VALUE_PATTERN.sub(lambda match: f"{match.group('name')}[REDACTED]", text)
+        del text, direction, metadata
+        return AIDefenseDecision(
+            allowed=False,
+            action="error",
+            reason="AI Defense Inspect endpoint not configured",
+            categories=("ai_defense_unavailable",),
+            error=True,
+        )
 
 
 class CiscoMCPAIDefenseClient:
@@ -126,13 +81,11 @@ class CiscoMCPAIDefenseClient:
         api_key: str,
         api_key_header: str = "X-Cisco-AI-Defense-API-Key",
         timeout_seconds: float = 2.0,
-        fail_open: bool = False,
     ):
         self.inspect_url = inspect_url
         self.api_key = api_key
         self.api_key_header = api_key_header
         self.timeout_seconds = timeout_seconds
-        self.fail_open = fail_open
 
     async def inspect(
         self,
@@ -158,20 +111,11 @@ class CiscoMCPAIDefenseClient:
         try:
             return await asyncio.to_thread(self._inspect_mcp_sync, payload)
         except Exception as exc:
-            if self.fail_open:
-                return AIDefenseDecision(
-                    allowed=True,
-                    action="allow",
-                    reason=f"AI Defense unavailable, fail-open enabled: {exc}",
-                    score=0.0,
-                    categories=("ai_defense_unavailable",),
-                    error=True,
-                )
             return AIDefenseDecision(
                 allowed=False,
-                action="block",
-                reason=f"AI Defense unavailable, fail-closed: {exc}",
-                score=1.0,
+                action="error",
+                reason=f"AI Defense unavailable: {exc}",
+                score=0.0,
                 categories=("ai_defense_unavailable",),
                 error=True,
             )
@@ -193,9 +137,13 @@ class CiscoMCPAIDefenseClient:
                 body = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            try:
+                return decision_from_mapping(json.loads(body))
+            except Exception:
+                pass
             raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
 
-        return decision_from_mapping(json.loads(body), fail_open=self.fail_open)
+        return decision_from_mapping(json.loads(body))
 
 
 class CiscoChatAIDefenseClient:
@@ -208,13 +156,11 @@ class CiscoChatAIDefenseClient:
         api_key: str,
         api_key_header: str = "X-Cisco-AI-Defense-API-Key",
         timeout_seconds: float = 2.0,
-        fail_open: bool = False,
     ):
         self.inspect_url = inspect_url
         self.api_key = api_key
         self.api_key_header = api_key_header
         self.timeout_seconds = timeout_seconds
-        self.fail_open = fail_open
 
     async def inspect(
         self,
@@ -240,20 +186,11 @@ class CiscoChatAIDefenseClient:
         try:
             return await asyncio.to_thread(self._inspect_chat_sync, payload)
         except Exception as exc:
-            if self.fail_open:
-                return AIDefenseDecision(
-                    allowed=True,
-                    action="allow",
-                    reason=f"AI Defense unavailable, fail-open enabled: {exc}",
-                    score=0.0,
-                    categories=("ai_defense_unavailable",),
-                    error=True,
-                )
             return AIDefenseDecision(
                 allowed=False,
-                action="block",
-                reason=f"AI Defense unavailable, fail-closed: {exc}",
-                score=1.0,
+                action="error",
+                reason=f"AI Defense unavailable: {exc}",
+                score=0.0,
                 categories=("ai_defense_unavailable",),
                 error=True,
             )
@@ -275,9 +212,13 @@ class CiscoChatAIDefenseClient:
                 body = response.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
+            try:
+                return decision_from_mapping(json.loads(body))
+            except Exception:
+                pass
             raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
 
-        return decision_from_mapping(json.loads(body), fail_open=self.fail_open)
+        return decision_from_mapping(json.loads(body))
 
 
 class CiscoCompositeAIDefenseClient:
@@ -330,29 +271,15 @@ class CiscoCompositeAIDefenseClient:
         return await self.mcp_client.inspect_mcp(payload, direction=direction, metadata=metadata)
 
 
-def decision_from_mapping(payload: Mapping[str, Any], *, fail_open: bool = False) -> AIDefenseDecision:
+def decision_from_mapping(payload: Mapping[str, Any]) -> AIDefenseDecision:
     jsonrpc_error = _jsonrpc_error_payload(payload)
     if jsonrpc_error is not None:
-        # The Inspect API returned a JSON-RPC error envelope inside an HTTP 200.
-        # Treat it the same way we treat an unreachable Inspect API: fail-open
-        # callers continue with an allow + error=True decision so observability
-        # still records the failure, while fail-closed callers block.
         reason = _jsonrpc_error_reason(jsonrpc_error)
-        if fail_open:
-            return AIDefenseDecision(
-                allowed=True,
-                action="allow",
-                reason=f"AI Defense returned an error, fail-open enabled: {reason}",
-                score=0.0,
-                categories=("ai_defense_error",),
-                error=True,
-                raw=dict(payload),
-            )
         return AIDefenseDecision(
             allowed=False,
-            action="block",
+            action="error",
             reason=reason,
-            score=1.0,
+            score=0.0,
             categories=("ai_defense_error",),
             error=True,
             raw=dict(payload),
@@ -388,7 +315,6 @@ def build_ai_defense_client_from_env() -> AIDefenseClient:
     mcp_inspect_url = os.getenv("AI_DEFENSE_MCP_INSPECT_URL")
     if chat_inspect_url or mcp_inspect_url:
         timeout = float(os.getenv("AI_DEFENSE_TIMEOUT_SECONDS", "5.0"))
-        fail_open = os.getenv("AI_DEFENSE_FAIL_OPEN", "false").lower() in {"1", "true", "yes"}
         default_api_key_header = os.getenv("AI_DEFENSE_API_KEY_HEADER", "X-Cisco-AI-Defense-API-Key")
         chat_api_key = os.getenv("AI_DEFENSE_CHAT_API_KEY", "")
         mcp_api_key = os.getenv("AI_DEFENSE_MCP_API_KEY", "")
@@ -398,7 +324,6 @@ def build_ai_defense_client_from_env() -> AIDefenseClient:
                 api_key=chat_api_key,
                 api_key_header=default_api_key_header,
                 timeout_seconds=timeout,
-                fail_open=fail_open,
             )
             if chat_inspect_url
             else None
@@ -409,7 +334,6 @@ def build_ai_defense_client_from_env() -> AIDefenseClient:
                 api_key=mcp_api_key,
                 api_key_header=default_api_key_header,
                 timeout_seconds=timeout,
-                fail_open=fail_open,
             )
             if mcp_inspect_url
             else None
@@ -418,7 +342,7 @@ def build_ai_defense_client_from_env() -> AIDefenseClient:
             return CiscoCompositeAIDefenseClient(chat_client=chat_client, mcp_client=mcp_client)
         return chat_client or mcp_client  # type: ignore[return-value]
 
-    return RuleBasedAIDefenseClient()
+    return UnconfiguredAIDefenseClient()
 
 
 def _text_to_mcp_payload(text: str, *, direction: str) -> Dict[str, Any]:
