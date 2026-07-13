@@ -1,3 +1,19 @@
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0from __future__ import annotations
+
 from __future__ import annotations
 
 import asyncio
@@ -121,13 +137,13 @@ class _AIDefensePrometheusMetrics:
         )
 
     def observe(
-        self,
-        *,
-        direction: str,
-        surface: str,
-        stage: str,
-        decision: AIDefenseDecision,
-        latency_ms: float,
+            self,
+            *,
+            direction: str,
+            surface: str,
+            stage: str,
+            decision: AIDefenseDecision,
+            latency_ms: float,
     ) -> None:
         labels = {
             "direction": _metric_label_value(direction),
@@ -146,10 +162,10 @@ class _AIDefensePrometheusMetrics:
 
 
 async def async_post_call_response_headers_hook(
-    data: Dict[str, Any],
-    user_api_key_dict: Any,
-    response: Any,
-    request_headers: Optional[Dict[str, str]] = None,
+        data: Dict[str, Any],
+        user_api_key_dict: Any,
+        response: Any,
+        request_headers: Optional[Dict[str, str]] = None,
 ) -> Optional[Dict[str, str]]:
     del user_api_key_dict, response, request_headers
     headers = _response_headers_for_data(data)
@@ -164,10 +180,10 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
     """LiteLLM proxy and SDK hook for AI Defense style request/response inspection."""
 
     def __init__(
-        self,
-        client: Optional[AIDefenseClient] = None,
-        *,
-        scan_outputs: Optional[bool] = None,
+            self,
+            client: Optional[AIDefenseClient] = None,
+            *,
+            scan_outputs: Optional[bool] = None,
     ):
         try:
             if CustomGuardrail is not None:
@@ -203,11 +219,11 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         )
 
     async def async_pre_call_hook(
-        self,
-        user_api_key_dict: Any,
-        cache: Any,
-        data: Dict[str, Any],
-        call_type: str,
+            self,
+            user_api_key_dict: Any,
+            cache: Any,
+            data: Dict[str, Any],
+            call_type: str,
     ) -> Any:
         del cache
         request_metadata = _request_metadata(data, user_api_key_dict, call_type)
@@ -236,7 +252,7 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
                     "AI Defense blocked MCP request before upstream: reason=%s categories=%s",
                     mcp_decision.reason,
                     ",".join(mcp_decision.categories) or "none",
-                )
+                    )
                 return self._blocked_response(mcp_decision)
 
             if _apply_mcp_payload_mutation(data, mcp_decision, direction="input"):
@@ -276,7 +292,7 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
                         data.get("mcp_tool_name"),
                         mcp_decision.reason,
                         ",".join(mcp_decision.categories) or "none",
-                    )
+                        )
                     return self._blocked_response(mcp_decision)
 
                 modified_arguments = _modified_arguments_from_mcp_decision(mcp_decision)
@@ -291,7 +307,7 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
                 await self._remember_mcp_request_context(
                     _synthetic_mcp_tool_call_payload(data) or synthetic_mcp_payload,
                     scope_hash=request_scope_hash,
-                )
+                    )
                 LOGGER.debug(
                     "AI Defense MCP tool request hook completed: action=%s tool=%s",
                     mcp_decision.action,
@@ -321,7 +337,7 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
                     "AI Defense blocked chat request before upstream: reason=%s categories=%s",
                     chat_decision.reason,
                     ",".join(chat_decision.categories) or "none",
-                )
+                    )
                 return self._blocked_response(chat_decision)
 
             if _apply_chat_request_mutation(data, chat_decision):
@@ -354,7 +370,7 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
                     inspected_count,
                     decision.reason,
                     ",".join(decision.categories) or "none",
-                )
+                    )
                 return self._blocked_response(decision)
 
             if decision.action == "redact" and decision.sanitized_text:
@@ -380,10 +396,10 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         return data
 
     async def async_post_call_success_hook(
-        self,
-        data: Dict[str, Any],
-        user_api_key_dict: Any,
-        response: Any,
+            self,
+            data: Dict[str, Any],
+            user_api_key_dict: Any,
+            response: Any,
     ) -> Any:
         if not self.scan_outputs:
             LOGGER.debug(
@@ -428,7 +444,7 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
                         "AI Defense blocked MCP response before returning to client: reason=%s categories=%s",
                         mcp_decision.reason,
                         ",".join(mcp_decision.categories) or "none",
-                    )
+                        )
                     return response
 
                 if _apply_mcp_response_payload_mutation(response, mcp_decision):
@@ -464,7 +480,7 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
                     "AI Defense blocked chat response before returning to client: reason=%s categories=%s",
                     chat_decision.reason,
                     ",".join(chat_decision.categories) or "none",
-                )
+                    )
                 raise _sdk_blocked_error(self._blocked_message(chat_decision), model=data.get("model"))
 
             if _apply_chat_response_mutation(response, chat_decision):
@@ -497,7 +513,7 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
                     inspected_count,
                     decision.reason,
                     ",".join(decision.categories) or "none",
-                )
+                    )
                 if isinstance(response, dict) and _is_mcp_payload(response):
                     _replace_mcp_response_with_blocked_message(response, decision)
                     return response
@@ -524,11 +540,11 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         return response
 
     async def async_post_call_response_headers_hook(
-        self,
-        data: Dict[str, Any],
-        user_api_key_dict: Any,
-        response: Any,
-        request_headers: Optional[Dict[str, str]] = None,
+            self,
+            data: Dict[str, Any],
+            user_api_key_dict: Any,
+            response: Any,
+            request_headers: Optional[Dict[str, str]] = None,
     ) -> Optional[Dict[str, str]]:
         return await async_post_call_response_headers_hook(
             data,
@@ -554,10 +570,10 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         return result
 
     async def async_post_call_success_deployment_hook(
-        self,
-        request_data: Dict[str, Any],
-        response: Any,
-        call_type: str,
+            self,
+            request_data: Dict[str, Any],
+            response: Any,
+            call_type: str,
     ) -> Any:
         LOGGER.debug(
             "AI Defense deployment response hook reached: call_type=%s model=%s",
@@ -567,11 +583,11 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         return await self.async_post_call_success_hook(request_data, None, response)
 
     async def async_post_mcp_tool_call_hook(
-        self,
-        kwargs: Dict[str, Any],
-        response_obj: Any,
-        start_time: Any,
-        end_time: Any,
+            self,
+            kwargs: Dict[str, Any],
+            response_obj: Any,
+            start_time: Any,
+            end_time: Any,
     ) -> Optional[Any]:
         del start_time, end_time
         if not self.scan_outputs:
@@ -633,7 +649,7 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
                 tool_name,
                 mcp_decision.reason,
                 ",".join(mcp_decision.categories) or "none",
-            )
+                )
             return response_obj
 
         if _apply_mcp_tool_response_mutation(response_obj, mcp_decision):
@@ -659,10 +675,10 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         return f"{BLOCKED_MESSAGE_PREFIX}: {decision.reason}.{categories}"
 
     def _scope_hash_for_request(
-        self,
-        *,
-        data: Mapping[str, Any],
-        user_api_key_dict: Any,
+            self,
+            *,
+            data: Mapping[str, Any],
+            user_api_key_dict: Any,
     ) -> Optional[str]:
         real_scope = _mcp_context_scope_hash(data=data, user_api_key_dict=user_api_key_dict)
         if real_scope is not None:
@@ -686,7 +702,7 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
         return self._instance_scope_hash
 
     async def _remember_mcp_request_context(
-        self, payload: Mapping[str, Any], *, scope_hash: Optional[str]
+            self, payload: Mapping[str, Any], *, scope_hash: Optional[str]
     ) -> None:
         if self._mcp_context_cache_size <= 0 or self._mcp_context_ttl_seconds <= 0:
             return
@@ -717,11 +733,11 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
                 self._mcp_request_contexts.popitem(last=False)
 
     async def _consume_mcp_request_context(
-        self,
-        *,
-        kwargs: Mapping[str, Any],
-        response_obj: Any,
-        scope_hash: Optional[str],
+            self,
+            *,
+            kwargs: Mapping[str, Any],
+            response_obj: Any,
+            scope_hash: Optional[str],
     ) -> Optional[Dict[str, Any]]:
         if scope_hash is None:
             return None
@@ -741,11 +757,11 @@ class AIDefenseLiteLLMHook(BaseLiteLLMHook):  # type: ignore[misc, valid-type]
             entries = list(self._mcp_request_contexts.items())
             for key, (_, context) in reversed(entries):
                 if _mcp_request_context_matches(
-                    context,
-                    scope_hash=scope_hash,
-                    response_id=response_id,
-                    tool_name=tool_name,
-                    server_name=server_name,
+                        context,
+                        scope_hash=scope_hash,
+                        response_id=response_id,
+                        tool_name=tool_name,
+                        server_name=server_name,
                 ):
                     self._mcp_request_contexts.pop(key, None)
                     return context
@@ -821,9 +837,9 @@ def _request_metadata(data: Mapping[str, Any], user_api_key_dict: Any, call_type
 
 
 def _mcp_context_scope_hash(
-    *,
-    data: Optional[Mapping[str, Any]],
-    user_api_key_dict: Any,
+        *,
+        data: Optional[Mapping[str, Any]],
+        user_api_key_dict: Any,
 ) -> Optional[str]:
     data = data or {}
     metadata = data.get("metadata") if isinstance(data.get("metadata"), Mapping) else {}
@@ -831,7 +847,7 @@ def _mcp_context_scope_hash(
     standard_metadata = (
         standard_logging.get("metadata")
         if isinstance(standard_logging, Mapping)
-        and isinstance(standard_logging.get("metadata"), Mapping)
+           and isinstance(standard_logging.get("metadata"), Mapping)
         else {}
     )
     sources = (data, metadata, standard_metadata, user_api_key_dict)
@@ -940,12 +956,12 @@ def _sdk_blocked_error(message: str, *, model: Any) -> Exception:
 
 
 def _record_decision(
-    data: Dict[str, Any],
-    direction: str,
-    decision: AIDefenseDecision,
-    *,
-    latency_ms: Optional[float] = None,
-    context: Optional[Mapping[str, Any]] = None,
+        data: Dict[str, Any],
+        direction: str,
+        decision: AIDefenseDecision,
+        *,
+        latency_ms: Optional[float] = None,
+        context: Optional[Mapping[str, Any]] = None,
 ) -> None:
     metadata = data.setdefault("metadata", {})
     ai_defense = metadata.setdefault("ai_defense", {})
@@ -961,15 +977,15 @@ def _record_decision(
 
 
 def _record_and_log_inspection(
-    data: Optional[Dict[str, Any]],
-    direction: str,
-    stage: str,
-    index: int,
-    inspection: InspectionResult,
-    metadata: Mapping[str, Any],
-    *,
-    payload: Optional[Mapping[str, Any]] = None,
-    kwargs: Optional[Mapping[str, Any]] = None,
+        data: Optional[Dict[str, Any]],
+        direction: str,
+        stage: str,
+        index: int,
+        inspection: InspectionResult,
+        metadata: Mapping[str, Any],
+        *,
+        payload: Optional[Mapping[str, Any]] = None,
+        kwargs: Optional[Mapping[str, Any]] = None,
 ) -> AIDefenseDecision:
     context = _observability_context(
         data=data,
@@ -1001,12 +1017,12 @@ def _record_and_log_inspection(
 
 
 def _publish_prometheus_metrics(
-    *,
-    direction: str,
-    surface: str,
-    stage: str,
-    decision: AIDefenseDecision,
-    latency_ms: float,
+        *,
+        direction: str,
+        surface: str,
+        stage: str,
+        decision: AIDefenseDecision,
+        latency_ms: float,
 ) -> None:
     metrics = _prometheus_metrics()
     if metrics is None:
@@ -1049,11 +1065,11 @@ def _prometheus_metrics() -> Any:
 
 
 def _prometheus_collector(
-    factory: Any,
-    name: str,
-    description: str,
-    labelnames: tuple[str, ...],
-    **kwargs: Any,
+        factory: Any,
+        name: str,
+        description: str,
+        labelnames: tuple[str, ...],
+        **kwargs: Any,
 ) -> Any:
     try:
         return factory(name, description, labelnames, **kwargs)
@@ -1069,12 +1085,12 @@ def _registered_prometheus_collector(name: str) -> Any:
         return None
     names_to_collectors = getattr(_PrometheusRegistry, "_names_to_collectors", {})
     for registered_name in (
-        name,
-        f"{name}_total",
-        f"{name}_created",
-        f"{name}_bucket",
-        f"{name}_sum",
-        f"{name}_count",
+            name,
+            f"{name}_total",
+            f"{name}_created",
+            f"{name}_bucket",
+            f"{name}_sum",
+            f"{name}_count",
     ):
         collector = names_to_collectors.get(registered_name)
         if collector is not None:
@@ -1097,14 +1113,14 @@ def _log_text_reached(stage: str, index: int, text: str) -> None:
 
 
 def _log_decision(
-    stage: str,
-    index: int,
-    decision: AIDefenseDecision,
-    *,
-    direction: Optional[str] = None,
-    surface: Optional[str] = None,
-    latency_ms: Optional[float] = None,
-    context: Optional[Mapping[str, Any]] = None,
+        stage: str,
+        index: int,
+        decision: AIDefenseDecision,
+        *,
+        direction: Optional[str] = None,
+        surface: Optional[str] = None,
+        latency_ms: Optional[float] = None,
+        context: Optional[Mapping[str, Any]] = None,
 ) -> None:
     LOGGER.debug(
         "AI Defense %s decision: index=%s action=%s allowed=%s score=%s categories=%s",
@@ -1114,7 +1130,7 @@ def _log_decision(
         decision.allowed,
         decision.score,
         ",".join(decision.categories) or "none",
-    )
+        )
     fields: Dict[str, Any] = {
         "direction": direction,
         "surface": surface,
@@ -1198,12 +1214,12 @@ def _metric_label_value(value: Any) -> str:
 
 
 def _observability_context(
-    *,
-    metadata: Mapping[str, Any],
-    surface: str,
-    data: Optional[Mapping[str, Any]] = None,
-    payload: Optional[Mapping[str, Any]] = None,
-    kwargs: Optional[Mapping[str, Any]] = None,
+        *,
+        metadata: Mapping[str, Any],
+        surface: str,
+        data: Optional[Mapping[str, Any]] = None,
+        payload: Optional[Mapping[str, Any]] = None,
+        kwargs: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
     context: Dict[str, Any] = {
         "surface": surface,
@@ -1255,10 +1271,10 @@ def _string_value(value: Any) -> Optional[str]:
 
 
 def _mcp_tool_name_from_sources(
-    *,
-    data: Mapping[str, Any],
-    payload: Optional[Mapping[str, Any]],
-    kwargs: Mapping[str, Any],
+        *,
+        data: Mapping[str, Any],
+        payload: Optional[Mapping[str, Any]],
+        kwargs: Mapping[str, Any],
 ) -> Optional[str]:
     tool = _first_string(
         data.get("mcp_tool_name"),
@@ -1299,9 +1315,9 @@ def _mcp_server_from_route(route: Optional[str]) -> Optional[str]:
 
 
 def _split_prefixed_mcp_tool(
-    tool_name: Optional[str],
-    *,
-    server_name: Optional[str] = None,
+        tool_name: Optional[str],
+        *,
+        server_name: Optional[str] = None,
 ) -> tuple[Optional[str], Optional[str]]:
     """Strip a known server-name prefix from an MCP tool name.
 
@@ -1343,11 +1359,11 @@ def _split_prefixed_mcp_tool_for_label(tool_name: Optional[str]) -> tuple[Option
 
 
 async def _inspect_text(
-    client: AIDefenseClient,
-    text: str,
-    *,
-    direction: str,
-    metadata: Mapping[str, Any],
+        client: AIDefenseClient,
+        text: str,
+        *,
+        direction: str,
+        metadata: Mapping[str, Any],
 ) -> InspectionResult:
     start = time.perf_counter()
     decision = await client.inspect(text, direction=direction, metadata=metadata)
@@ -1359,11 +1375,11 @@ async def _inspect_text(
 
 
 async def _inspect_mcp_payload_if_supported(
-    client: AIDefenseClient,
-    payload: Mapping[str, Any],
-    *,
-    direction: str,
-    metadata: Mapping[str, Any],
+        client: AIDefenseClient,
+        payload: Mapping[str, Any],
+        *,
+        direction: str,
+        metadata: Mapping[str, Any],
 ) -> Optional[InspectionResult]:
     inspect_mcp = getattr(client, "inspect_mcp", None)
     if not callable(inspect_mcp) or not _is_mcp_payload(payload):
@@ -1385,11 +1401,11 @@ async def _inspect_mcp_payload_if_supported(
 
 
 async def _inspect_chat_payload_if_supported(
-    client: AIDefenseClient,
-    payload: Optional[Mapping[str, Any]],
-    *,
-    direction: str,
-    metadata: Mapping[str, Any],
+        client: AIDefenseClient,
+        payload: Optional[Mapping[str, Any]],
+        *,
+        direction: str,
+        metadata: Mapping[str, Any],
 ) -> Optional[InspectionResult]:
     inspect_chat = getattr(client, "inspect_chat", None)
     if not callable(inspect_chat) or payload is None:
@@ -1523,25 +1539,25 @@ def _apply_chat_response_mutation(response: Any, decision: AIDefenseDecision) ->
 def _chat_payload_messages_mutation(decision: AIDefenseDecision) -> Optional[list[Dict[str, Any]]]:
     for container in _mutation_containers(decision.raw):
         for key in (
-            "sanitized_messages",
-            "sanitizedMessages",
-            "modified_messages",
-            "modifiedMessages",
-            "messages",
+                "sanitized_messages",
+                "sanitizedMessages",
+                "modified_messages",
+                "modifiedMessages",
+                "messages",
         ):
             messages = _normalized_chat_messages(container.get(key))
             if messages:
                 return messages
 
         for key in (
-            "sanitized_payload",
-            "sanitizedPayload",
-            "modified_payload",
-            "modifiedPayload",
-            "chat_payload",
-            "chatPayload",
-            "request",
-            "response",
+                "sanitized_payload",
+                "sanitizedPayload",
+                "modified_payload",
+                "modifiedPayload",
+                "chat_payload",
+                "chatPayload",
+                "request",
+                "response",
         ):
             value = container.get(key)
             if isinstance(value, Mapping):
@@ -1699,8 +1715,8 @@ def _replace_mcp_response_with_blocked_message(response: Dict[str, Any], decisio
 
 
 def _mcp_response_payload_from_request_context(
-    request_payload: Mapping[str, Any],
-    response_payload: Mapping[str, Any],
+        request_payload: Mapping[str, Any],
+        response_payload: Mapping[str, Any],
 ) -> Optional[Dict[str, Any]]:
     if not _is_mcp_payload(response_payload):
         return None
@@ -1738,12 +1754,12 @@ def _mcp_request_context_payload(payload: Mapping[str, Any]) -> Optional[Dict[st
 
 
 def _mcp_request_context_matches(
-    context: Mapping[str, Any],
-    *,
-    scope_hash: str,
-    response_id: Optional[str],
-    tool_name: Optional[str],
-    server_name: Optional[str],
+        context: Mapping[str, Any],
+        *,
+        scope_hash: str,
+        response_id: Optional[str],
+        tool_name: Optional[str],
+        server_name: Optional[str],
 ) -> bool:
     if context.get("scope_hash") != scope_hash:
         return False
@@ -1779,9 +1795,9 @@ def _mcp_request_context_matches(
     if response_short_tool is not None and response_short_tool == context_tool:
         return True
     if (
-        context_short_tool is not None
-        and response_short_tool is not None
-        and context_short_tool == response_short_tool
+            context_short_tool is not None
+            and response_short_tool is not None
+            and context_short_tool == response_short_tool
     ):
         return True
     return False
@@ -1810,10 +1826,10 @@ def _apply_mcp_response_payload_mutation(target: Dict[str, Any], decision: AIDef
 
 
 def _mcp_tool_response_payload(
-    kwargs: Mapping[str, Any],
-    response_obj: Any,
-    *,
-    request_context: Optional[Mapping[str, Any]] = None,
+        kwargs: Mapping[str, Any],
+        response_obj: Any,
+        *,
+        request_context: Optional[Mapping[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     params = _mcp_tool_call_params_from_kwargs(kwargs)
     request_params = request_context.get("params") if request_context is not None else None
@@ -1838,8 +1854,8 @@ def _mcp_tool_response_payload(
     return {
         "jsonrpc": "2.0",
         "id": _mcp_response_id(response_obj)
-        or (str(request_context.get("id")) if request_context is not None and request_context.get("id") is not None else None)
-        or "litellm-mcp-tool-response",
+              or (str(request_context.get("id")) if request_context is not None and request_context.get("id") is not None else None)
+              or "litellm-mcp-tool-response",
         "method": _string_value(request_context.get("method")) if request_context is not None else "tools/call",
         "params": params,
         "result": {"content": serialized_content},
@@ -1847,10 +1863,10 @@ def _mcp_tool_response_payload(
 
 
 def _merge_mcp_tool_response_params(
-    params: Dict[str, Any],
-    request_params: Mapping[str, Any],
-    *,
-    server_name: Optional[str] = None,
+        params: Dict[str, Any],
+        request_params: Mapping[str, Any],
+        *,
+        server_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     request_tool = _string_value(request_params.get("name"))
     params_tool = _string_value(params.get("name"))
@@ -1866,10 +1882,10 @@ def _merge_mcp_tool_response_params(
 
 
 def _mcp_tool_names_match(
-    left: Optional[str],
-    right: Optional[str],
-    *,
-    server_name: Optional[str] = None,
+        left: Optional[str],
+        right: Optional[str],
+        *,
+        server_name: Optional[str] = None,
 ) -> bool:
     if not left or not right:
         return False

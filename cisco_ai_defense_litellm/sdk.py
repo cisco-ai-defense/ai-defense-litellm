@@ -58,13 +58,13 @@ def uninstall(*, litellm_module: Optional[ModuleType] = None) -> bool:
 
     removed = False
     for list_name in (
-        "callbacks",
-        "input_callback",
-        "success_callback",
-        "failure_callback",
-        "_async_input_callback",
-        "_async_success_callback",
-        "_async_failure_callback",
+            "callbacks",
+            "input_callback",
+            "success_callback",
+            "failure_callback",
+            "_async_input_callback",
+            "_async_success_callback",
+            "_async_failure_callback",
     ):
         callback_list = getattr(litellm, list_name, None)
         if not isinstance(callback_list, list):
