@@ -1,3 +1,19 @@
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0from __future__ import annotations
+
 import copy
 import sys
 import unittest
@@ -17,11 +33,11 @@ MOCK_MCP_ALIAS = "cisco_mock_mcp"
 
 
 def _api_user(
-    *,
-    team_id="team-a",
-    user_id="user-a",
-    api_key_hash="key-a",
-    session_id="session-a",
+        *,
+        team_id="team-a",
+        user_id="user-a",
+        api_key_hash="key-a",
+        session_id="session-a",
 ):
     return SimpleNamespace(
         team_id=team_id,
@@ -32,11 +48,11 @@ def _api_user(
 
 
 def _api_identity_kwargs(
-    *,
-    team_id="team-a",
-    user_id="user-a",
-    api_key_hash="key-a",
-    session_id="session-a",
+        *,
+        team_id="team-a",
+        user_id="user-a",
+        api_key_hash="key-a",
+        session_id="session-a",
 ):
     return {
         "team_id": team_id,
@@ -558,11 +574,11 @@ class LiteLLMUpstreamMCPSyntheticDataShapeTests(unittest.IsolatedAsyncioTestCase
     """
 
     def _synthetic_data(
-        self,
-        *,
-        request_route: str,
-        prefixed_tool_name: str,
-        arguments: dict,
+            self,
+            *,
+            request_route: str,
+            prefixed_tool_name: str,
+            arguments: dict,
     ) -> dict:
         return {
             "messages": [

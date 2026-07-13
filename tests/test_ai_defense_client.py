@@ -1,3 +1,19 @@
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0from __future__ import annotations
+
 import os
 import sys
 import urllib.error
@@ -127,7 +143,7 @@ class CiscoMCPAIDefenseClientTests(unittest.IsolatedAsyncioTestCase):
                 400,
                 "Bad Request",
                 {},
-                FakeHTTPResponse(b'{"allowed": false, "reason": "blocked by AI Defense"}'),
+                FakeHTTPResponse(b'{"action": "Block", "reason": "blocked by AI Defense"}'),
             )
 
         client = CiscoChatAIDefenseClient(
@@ -150,7 +166,7 @@ class CiscoMCPAIDefenseClientTests(unittest.IsolatedAsyncioTestCase):
                 400,
                 "Bad Request",
                 {},
-                FakeHTTPResponse(b'{"jsonrpc": "2.0", "result": {"allowed": false, "reason": "MCP blocked"}}'),
+                FakeHTTPResponse(b'{"jsonrpc": "2.0", "result": {"action": "Block", "reason": "MCP blocked"}}'),
             )
 
         client = CiscoMCPAIDefenseClient(
@@ -273,7 +289,7 @@ class CiscoMCPAIDefenseClientTests(unittest.IsolatedAsyncioTestCase):
         def fake_urlopen(request, timeout):
             del timeout
             seen["body"] = request.data.decode("utf-8")
-            return FakeHTTPResponse(b'{"allowed": false, "reason": "blocked", "categories": ["mcp"]}')
+            return FakeHTTPResponse(b'{"action": "Block", "reason": "blocked", "categories": ["mcp"]}')
 
         client = CiscoMCPAIDefenseClient("https://ai-defense.example.com/api/v1/inspect/mcp", api_key="test-key")
 
@@ -285,8 +301,8 @@ class CiscoMCPAIDefenseClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"method": "tools/call"', seen["body"])
         self.assertIn('"text": "unsafe text"', seen["body"])
 
-    async def test_decision_parser_handles_common_block_verdicts(self):
-        decision = decision_from_mapping({"verdict": "unsafe", "risk_score": 0.91, "violations": ["prompt_injection"]})
+    async def test_decision_parser_handles_block_action(self):
+        decision = decision_from_mapping({"action": "Block", "risk_score": 0.91, "violations": ["prompt_injection"]})
 
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.action, "block")
@@ -300,6 +316,7 @@ class CiscoMCPAIDefenseClientTests(unittest.IsolatedAsyncioTestCase):
                 "id": 10,
                 "result": {
                     "allowed": False,
+                    "action": "Block",
                     "reason": "MCP request blocked",
                     "categories": ["tool_abuse"],
                 },
