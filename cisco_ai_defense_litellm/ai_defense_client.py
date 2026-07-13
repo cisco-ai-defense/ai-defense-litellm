@@ -1,4 +1,18 @@
-from __future__ import annotations
+# Copyright 2026 Cisco Systems, Inc. and its affiliates
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0from __future__ import annotations
 
 import asyncio
 import json
@@ -10,15 +24,15 @@ from typing import Any, Dict, Mapping, Optional, Protocol
 
 class AIDefenseDecision:
     def __init__(
-        self,
-        allowed: bool,
-        action: str = "allow",
-        reason: str = "No policy violations detected",
-        score: float = 0.0,
-        categories: tuple[str, ...] = (),
-        sanitized_text: Optional[str] = None,
-        error: bool = False,
-        raw: Optional[Mapping[str, Any]] = None,
+            self,
+            allowed: bool,
+            action: str = "allow",
+            reason: str = "No policy violations detected",
+            score: float = 0.0,
+            categories: tuple[str, ...] = (),
+            sanitized_text: Optional[str] = None,
+            error: bool = False,
+            raw: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.allowed = allowed
         self.action = action
@@ -42,11 +56,11 @@ class AIDefenseDecision:
 
 class AIDefenseClient(Protocol):
     async def inspect(
-        self,
-        text: str,
-        *,
-        direction: str,
-        metadata: Optional[Mapping[str, Any]] = None,
+            self,
+            text: str,
+            *,
+            direction: str,
+            metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
         ...
 
@@ -55,11 +69,11 @@ class UnconfiguredAIDefenseClient:
     """Error client used when no AI Defense Inspect endpoint is configured."""
 
     async def inspect(
-        self,
-        text: str,
-        *,
-        direction: str,
-        metadata: Optional[Mapping[str, Any]] = None,
+            self,
+            text: str,
+            *,
+            direction: str,
+            metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
         del text, direction, metadata
         return AIDefenseDecision(
@@ -75,12 +89,12 @@ class CiscoMCPAIDefenseClient:
     """HTTP adapter for Cisco AI Defense's MCP inspection endpoint."""
 
     def __init__(
-        self,
-        inspect_url: str,
-        *,
-        api_key: str,
-        api_key_header: str = "X-Cisco-AI-Defense-API-Key",
-        timeout_seconds: float = 2.0,
+            self,
+            inspect_url: str,
+            *,
+            api_key: str,
+            api_key_header: str = "X-Cisco-AI-Defense-API-Key",
+            timeout_seconds: float = 2.0,
     ):
         self.inspect_url = inspect_url
         self.api_key = api_key
@@ -88,11 +102,11 @@ class CiscoMCPAIDefenseClient:
         self.timeout_seconds = timeout_seconds
 
     async def inspect(
-        self,
-        text: str,
-        *,
-        direction: str,
-        metadata: Optional[Mapping[str, Any]] = None,
+            self,
+            text: str,
+            *,
+            direction: str,
+            metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
         return await self.inspect_mcp(
             _text_to_mcp_payload(text, direction=direction),
@@ -101,11 +115,11 @@ class CiscoMCPAIDefenseClient:
         )
 
     async def inspect_mcp(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        direction: str,
-        metadata: Optional[Mapping[str, Any]] = None,
+            self,
+            payload: Mapping[str, Any],
+            *,
+            direction: str,
+            metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
         del metadata
         try:
@@ -150,12 +164,12 @@ class CiscoChatAIDefenseClient:
     """HTTP adapter for Cisco AI Defense's chat inspection endpoint."""
 
     def __init__(
-        self,
-        inspect_url: str,
-        *,
-        api_key: str,
-        api_key_header: str = "X-Cisco-AI-Defense-API-Key",
-        timeout_seconds: float = 2.0,
+            self,
+            inspect_url: str,
+            *,
+            api_key: str,
+            api_key_header: str = "X-Cisco-AI-Defense-API-Key",
+            timeout_seconds: float = 2.0,
     ):
         self.inspect_url = inspect_url
         self.api_key = api_key
@@ -163,11 +177,11 @@ class CiscoChatAIDefenseClient:
         self.timeout_seconds = timeout_seconds
 
     async def inspect(
-        self,
-        text: str,
-        *,
-        direction: str,
-        metadata: Optional[Mapping[str, Any]] = None,
+            self,
+            text: str,
+            *,
+            direction: str,
+            metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
         role = "assistant" if direction == "output" else "user"
         return await self.inspect_chat(
@@ -177,11 +191,11 @@ class CiscoChatAIDefenseClient:
         )
 
     async def inspect_chat(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        direction: str,
-        metadata: Optional[Mapping[str, Any]] = None,
+            self,
+            payload: Mapping[str, Any],
+            *,
+            direction: str,
+            metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
         try:
             return await asyncio.to_thread(self._inspect_chat_sync, payload)
@@ -225,10 +239,10 @@ class CiscoCompositeAIDefenseClient:
     """Cisco AI Defense adapter using chat and MCP inspection endpoints together."""
 
     def __init__(
-        self,
-        *,
-        chat_client: Optional[CiscoChatAIDefenseClient] = None,
-        mcp_client: Optional[CiscoMCPAIDefenseClient] = None,
+            self,
+            *,
+            chat_client: Optional[CiscoChatAIDefenseClient] = None,
+            mcp_client: Optional[CiscoMCPAIDefenseClient] = None,
     ):
         if chat_client is None and mcp_client is None:
             raise ValueError("At least one AI Defense client must be configured")
@@ -236,11 +250,11 @@ class CiscoCompositeAIDefenseClient:
         self.mcp_client = mcp_client
 
     async def inspect(
-        self,
-        text: str,
-        *,
-        direction: str,
-        metadata: Optional[Mapping[str, Any]] = None,
+            self,
+            text: str,
+            *,
+            direction: str,
+            metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
         if self.chat_client is not None:
             return await self.chat_client.inspect(text, direction=direction, metadata=metadata)
@@ -249,22 +263,22 @@ class CiscoCompositeAIDefenseClient:
         raise RuntimeError("No AI Defense inspection client configured")
 
     async def inspect_chat(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        direction: str,
-        metadata: Optional[Mapping[str, Any]] = None,
+            self,
+            payload: Mapping[str, Any],
+            *,
+            direction: str,
+            metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
         if self.chat_client is None:
             return await self.inspect(_messages_to_text(payload.get("messages")), direction=direction, metadata=metadata)
         return await self.chat_client.inspect_chat(payload, direction=direction, metadata=metadata)
 
     async def inspect_mcp(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        direction: str,
-        metadata: Optional[Mapping[str, Any]] = None,
+            self,
+            payload: Mapping[str, Any],
+            *,
+            direction: str,
+            metadata: Optional[Mapping[str, Any]] = None,
     ) -> AIDefenseDecision:
         if self.mcp_client is None:
             return await self.inspect(json.dumps(payload), direction=direction, metadata=metadata)
@@ -379,17 +393,11 @@ def _messages_to_text(messages: Any) -> str:
 
 
 def _decision_action(payload: Mapping[str, Any]) -> str:
-    raw_action = payload.get("action") or payload.get("decision") or payload.get("verdict") or payload.get("status")
+    raw_action = payload.get("action")
     if raw_action is None:
-        if payload.get("blocked"):
-            return "block"
-        if payload.get("allowed") is False or payload.get("safe") is False or payload.get("is_safe") is False:
-            return "block"
-        if payload.get("sanitized_text") or payload.get("sanitizedText") or payload.get("sanitized_payload"):
-            return "redact"
         return "allow"
 
-    action = str(raw_action).lower()
+    action = str(raw_action).strip().lower()
     if action in {"deny", "denied", "blocked", "block", "reject", "rejected", "unsafe", "malicious"}:
         return "block"
     if action in {"sanitize", "sanitized", "redacted"}:
@@ -421,13 +429,6 @@ def _has_decision_fields(payload: Mapping[str, Any]) -> bool:
         key in payload
         for key in (
             "action",
-            "allowed",
-            "blocked",
-            "safe",
-            "is_safe",
-            "decision",
-            "verdict",
-            "status",
             "score",
             "risk_score",
             "confidence",
@@ -444,15 +445,8 @@ def _has_decision_fields(payload: Mapping[str, Any]) -> bool:
 
 
 def _decision_allowed(payload: Mapping[str, Any], action: str) -> bool:
-    if "allowed" in payload:
-        return bool(payload["allowed"])
-    if "blocked" in payload:
-        return not bool(payload["blocked"])
-    if "safe" in payload:
-        return bool(payload["safe"])
-    if "is_safe" in payload:
-        return bool(payload["is_safe"])
-    return action != "block"
+    del payload
+    return action not in {"block", "error"}
 
 
 def _decision_categories(payload: Mapping[str, Any]) -> Any:
