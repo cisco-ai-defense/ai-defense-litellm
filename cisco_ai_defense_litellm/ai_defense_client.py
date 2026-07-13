@@ -14,6 +14,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0from __future__ import annotations
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
